@@ -44,6 +44,7 @@ export default function ProfileScreen() {
     avatarUrl?: string;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
     fetchUserInfo();
@@ -95,14 +96,11 @@ export default function ProfileScreen() {
           text: 'Logout',
           style: 'destructive',
           onPress: async () => {
+            setLoggingOut(true);
             try {
-              // Clear tokens and data first
               await clearTokens();
-              
-              // Sign out from Firebase
               await auth.signOut();
               
-              // Reset navigation to Welcome screen
               navigation.dispatch(
                 CommonActions.reset({
                   index: 0,
@@ -113,6 +111,8 @@ export default function ProfileScreen() {
               let msg = 'Failed to logout';
               if (error instanceof Error) msg = error.message;
               Alert.alert('Error', msg);
+            } finally {
+              setLoggingOut(false);
             }
           },
         },
@@ -132,45 +132,6 @@ export default function ProfileScreen() {
       title: 'Notification Settings',
       subtitle: 'Manage your notification preferences',
       onPress: () => navigation.navigate('NotificationSettings' as never),
-    },
-    {
-      icon: 'notifications-active',
-      title: 'Bank Notifications',
-      subtitle: 'Auto-detect transactions from SMS & apps',
-      onPress: () => navigation.navigate('BankNotificationSettings' as never),
-    },
-    {
-      icon: 'email',
-      title: 'Email Configuration',
-      subtitle: 'Setup email transaction parsing',
-      onPress: () => navigation.navigate('EmailConfig' as never),
-    },
-    {
-      icon: 'notifications-active',
-      title: 'Real-time Email Alerts',
-      subtitle: 'Instant notifications for QR payments',
-      onPress: () => {
-        Alert.alert(
-          '🔔 Real-time Email Alerts',
-          'CURRENT STATUS: App-based monitoring ⚡\n\n✅ Works when app is open/minimized\n❌ Requires app to be running\n\nFor 24/7 monitoring, you would need:\n• Push notification setup\n• Background service\n• Server-side processing\n\nRecommendation: Open app briefly after QR payments to process transactions.',
-          [
-            {
-              text: 'Setup Push Notifications',
-              onPress: () => Alert.alert('Coming Soon', 'Push notification setup will be available in future updates for true background monitoring.')
-            },
-            {
-              text: 'Current Mode is Fine',
-              style: 'default'
-            }
-          ]
-        );
-      },
-    },
-    {
-      icon: 'science',
-      title: 'Test Bank Parser',
-      subtitle: 'Test how AI parses bank notifications',
-      onPress: () => navigation.navigate('TestBankNotification' as never),
     },
     {
       icon: 'security',
@@ -244,18 +205,24 @@ export default function ProfileScreen() {
             ))}
           </View>
 
-          {/* Logout Button */}
-          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-            <Icon name="logout" size={20} color="#fff" />
-            <Text style={styles.logoutText}>Logout</Text>
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={handleLogout}
+            disabled={loggingOut}
+          >
+            {loggingOut ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <>
+                <Icon name="logout" size={20} color="#fff" />
+                <Text style={styles.logoutText}>Logout</Text>
+              </>
+            )}
           </TouchableOpacity>
-
-          {/* App Info - Modernized */}
           <AppInfo />
         </ScrollView>
       </LinearGradient>
 
-      {/* Edit Profile Modal */}
       <EditProfileModal
         visible={editProfileVisible}
         onClose={() => setEditProfileVisible(false)}
@@ -264,11 +231,11 @@ export default function ProfileScreen() {
           setUserInfo((prev) => prev ? { ...prev, username: newUsername, avatar: newAvatar, avatarUrl: newAvatarUrl } : prev);
         }}
       />
-      {/* Help & Support Modal (Reusable) */}
+
       <HelpSupportModal visible={helpVisible} onClose={() => setHelpVisible(false)} />
-      {/* Privacy & Security Modal (Reusable) */}
+
       <PrivacySecurityModal visible={privacyVisible} onClose={() => setPrivacyVisible(false)} />
-      {/* About Modal (Reusable) */}
+
       <AboutModal visible={aboutVisible} onClose={() => setAboutVisible(false)} />
     </>
   );

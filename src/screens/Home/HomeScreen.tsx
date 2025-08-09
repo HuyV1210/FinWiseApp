@@ -4,11 +4,9 @@ import {
   View, 
   Alert, 
   TouchableOpacity, 
-  ScrollView, 
   FlatList, 
   Platform, 
   UIManager, 
-  LayoutAnimation 
 } from 'react-native';
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Header from '../../components/Header';
@@ -25,11 +23,9 @@ import type { Budget, BudgetStatus } from '../../types/budget';
 import { subscribeToNotificationCount } from '../../services/notificationService';
 import { sendBudgetAlert } from '../../services/notificationService';
 
-// Define your navigation param types
  type RootStackParamList = {
    Search: { transactions: Transaction[] };
    Budget: undefined;
-   // ...other screens
  };
 
 export const PERIODS = {
@@ -56,7 +52,6 @@ export default function Home () {
     throttledFilterTransactions(period, transactions);
   };
 
-  // Throttled filterTransactionsByPeriod
   const throttledFilterTransactions = useCallback((period: string, allTransactions: Transaction[]) => {
     if (filterTimeout.current) {
       clearTimeout(filterTimeout.current);
@@ -72,7 +67,6 @@ export default function Home () {
     }, 200); // 200ms throttle
   }, [transactions]);
 
-  // Simple currency conversion rates (in a real app, you'd fetch these from an API)
   const currencyRates: { [key: string]: number } = {
     VND: 1,
     USD: 24000,
@@ -90,18 +84,14 @@ export default function Home () {
   const convertCurrency = useCallback((amount: number, fromCurrency: string, toCurrency: string): number => {
     if (fromCurrency === toCurrency) return amount;
     
-    // Convert to VND first (base currency), then to target currency
     const amountInVND = amount * (currencyRates[fromCurrency] || 1);
     const convertedAmount = amountInVND / (currencyRates[toCurrency] || 1);
     
     return convertedAmount;
   }, []);
 
-  // Helper function to clean up long transaction titles
   const formatTransactionTitle = useCallback((title: string): string => {
-    // If title is too long, try to extract meaningful parts
     if (title.length > 80) {
-      // For ACB-style messages, extract key information
       if (title.includes('ACB:') && title.includes('da chuyen den')) {
         const parts = title.split('Noi dung:');
         if (parts.length > 1) {
@@ -110,14 +100,12 @@ export default function Home () {
         }
       }
       
-      // For other long messages, truncate intelligently
       return title.length > 60 ? title.substring(0, 60) + '...' : title;
     }
     
     return title;
   }, []);
 
-  // Render individual transaction item
   const renderTransactionItem = useCallback(({ item }: { item: any }) => {
     const price = typeof item.price === 'string'
       ? Number(item.price.replace(/,/g, ''))
@@ -125,7 +113,7 @@ export default function Home () {
 
     const isIncome = item.type === 'income';
     const transactionDate = item.date.toDate();
-    const transactionCurrency = item.currency || currency; // Use transaction's currency or fallback to user's currency
+    const transactionCurrency = item.currency || currency; 
     
     // Convert transaction amount to user's preferred currency for display
     const convertedAmount = convertCurrency(price, transactionCurrency, currency);
@@ -595,7 +583,7 @@ export default function Home () {
               data={filteredTransactions}
               renderItem={renderTransactionItem}
               keyExtractor={(item) => item.id}
-              showsVerticalScrollIndicator={true}
+              showsVerticalScrollIndicator={false}
               style={styles.transactionsList}
               refreshing={refreshing}
               onRefresh={handleRefresh}

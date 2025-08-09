@@ -2,9 +2,6 @@ import { PermissionsAndroid, Platform, DeviceEventEmitter } from 'react-native';
 import SmsAndroid from 'react-native-get-sms-android';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Top-level log to verify module loading
-console.log('🚀 SMS Bank Notification Service file loaded - top level');
-
 interface SMSTransaction {
   amount: number;
   type: 'income' | 'expense';
@@ -23,54 +20,19 @@ class SMSBankNotificationService {
   private readonly PROCESSED_SMS_KEY = 'processedSMSIds';
 
   constructor() {
-    console.log('🔧 SMS Bank Notification Service constructor called');
     // Load processed SMS IDs from storage
     this.loadProcessedSMSIds();
-    // Auto-test SMS module status on initialization
-    this.autoTestOnStartup();
-  }
-
-  private autoTestOnStartup() {
-    console.log('⏰ Auto-test scheduled for 2 seconds from now...');
-    // Wait a bit for the app to fully initialize, then test
-    setTimeout(() => {
-      console.log('\n🚀 === SMS BANK NOTIFICATION SERVICE AUTO-TEST ===');
-      this.testSMSModuleStatus();
-      
-      // Since SMS module is working, test full functionality
-      setTimeout(() => {
-        console.log('\n🧪 === TESTING FULL SMS TRANSACTION FLOW ===');
-        this.testVietnameseSMS();
-        
-        // Test the ACB transfer format
-        setTimeout(() => {
-          this.testACBTransferSMS();
-          
-          // Test manual event emission for ChatScreen debugging
-          setTimeout(() => {
-            this.testManualTransactionEvent();
-          }, 500);
-        }, 500);
-      }, 1000);
-      
-      console.log('🚀 === AUTO-TEST COMPLETED ===\n');
-    }, 2000);
   }
 
   // Load processed SMS IDs from AsyncStorage
   private async loadProcessedSMSIds(): Promise<void> {
     try {
-      console.log('📂 Loading processed SMS IDs from storage...');
       const stored = await AsyncStorage.getItem(this.PROCESSED_SMS_KEY);
       if (stored) {
         const idsArray = JSON.parse(stored);
         this.processedSMSIds = new Set(idsArray);
-        console.log(`📂 Loaded ${this.processedSMSIds.size} processed SMS IDs from storage`);
-      } else {
-        console.log('📂 No processed SMS IDs found in storage');
-      }
+      } 
     } catch (error) {
-      console.error('❌ Error loading processed SMS IDs:', error);
       this.processedSMSIds = new Set();
     }
   }
@@ -803,6 +765,3 @@ Would you like to save this transaction or change the category?
 
 export const smsBankNotificationService = new SMSBankNotificationService();
 
-// Immediate log to verify the service is being loaded
-console.log('🚀 SMS Bank Notification Service module loaded successfully');
-console.log('🔧 Service instance created:', !!smsBankNotificationService);

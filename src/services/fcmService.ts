@@ -20,7 +20,6 @@ export class FCMService {
     if (this.isInitialized) return;
 
     try {
-      console.log('📱 Starting FCM initialization...');
       
       // Check if React Native Firebase is properly configured
       const configurationValid = await this.checkFirebaseConfiguration();

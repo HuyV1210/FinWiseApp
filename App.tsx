@@ -3,9 +3,9 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
 const ReactNative = require('react-native');
 const { useColorScheme } = ReactNative;
-import SplashScreen from './src/screens/SplashScreen/SplashScreen';
+import SplashScreen from './src/screens/Splash/SplashScreen.tsx';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import WelcomeScreen from './src/screens/WelcomeScreen.tsx/WelcomeScreen.tsx';
+import WelcomeScreen from './src/screens/Welcome/WelcomeScreen.tsx';
 import LoginScreen from './src/screens/Auth/LoginScreen';
 import RegisterScreen from './src/screens/Auth/RegisterScreen';
 import ForgotPasswordScreen from './src/screens/Auth/ForgotPasswordScreen';
@@ -20,12 +20,6 @@ import { AuthProvider } from './src/context/AuthContext';
 import { fcmService } from './src/services/fcmService';
 import { auth } from './src/services/firebase';
 import React from 'react';
-import { DeviceEventEmitter } from 'react-native';
-
-// Import SMS service to ensure it's initialized
-import { smsBankNotificationService } from './src/services/smsBankNotificationService';
-// Import simplified email transaction service
-import { emailTransactionService } from './src/services/emailTransactionService';
 
 enableScreens();
 
@@ -39,8 +33,6 @@ export default function App() {
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
       if (user) {
         try {
-          console.log('🔐 User authenticated, initializing FCM...');
-          // Add a delay to ensure React Native Firebase is fully loaded
           setTimeout(async () => {
             try {
               await fcmService.initialize();
@@ -83,16 +75,6 @@ export default function App() {
             component={EmailConfigScreen}
             options={{ headerShown: false }}
           />
-          {/* <Stack.Screen 
-            name="BankNotificationSettings" 
-            component={BankNotificationSettings}
-            options={{ headerShown: true, title: 'Bank Notifications' }}
-          />
-          <Stack.Screen 
-            name="TestBankNotification" 
-            component={TestBankNotification}
-            options={{ headerShown: true, title: 'Test Bank Parser' }}
-          /> */}
         </Stack.Navigator>
         </NavigationContainer>
       </AuthProvider>

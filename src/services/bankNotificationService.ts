@@ -1,4 +1,4 @@
-import { NativeModules, DeviceEventEmitter, PermissionsAndroid, Platform, AppState } from 'react-native';
+import { NativeModules, DeviceEventEmitter, PermissionsAndroid, Platform, AppState, Alert, Linking } from 'react-native';
 import { addDoc, collection } from 'firebase/firestore';
 import { auth, firestore } from './firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,6 +17,9 @@ class BankNotificationService {
   private eventListener: any = null;
   private appStateListener: any = null;
   private static STORAGE_KEY = 'pending_bank_notifications';
+  private openAppSettings() {
+    Linking.openSettings();
+  }
 
   async initialize(): Promise<boolean> {
     try {
@@ -27,22 +30,20 @@ class BankNotificationService {
       this.setupAppStateMonitoring();
       
       if (Platform.OS === 'android') {
-        // Request notification access permission
-        // Note: This would need to be handled through Settings in a real implementation
-        const granted = await PermissionsAndroid.request(
-          'android.permission.BIND_NOTIFICATION_LISTENER_SERVICE' as any,
-          {
-            title: 'Notification Access Permission',
-            message: 'FinWise needs access to notifications to automatically track bank transactions.',
-            buttonNeutral: 'Ask Me Later',
-            buttonNegative: 'Cancel',
-            buttonPositive: 'OK',
-          }
-        );
-
-        if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+        const enabled = await NativeModules.BankNotificationModule.isNotificationListenerEnabled();
+        if (enabled) {
           this.startListening();
           return true;
+        } else {
+          Alert.alert(
+            'Permission Required',
+            'Please enable notification access for FinWise in system settings to track bank transactions.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Open Settings', onPress: () => this.openAppSettings() },
+            ]
+          );
+          return false;
         }
       }
       return false;
@@ -55,10 +56,9 @@ class BankNotificationService {
   private setupAppStateMonitoring() {
     this.appStateListener = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active') {
-        console.log('App became active - processing pending notifications');
         this.processPendingNotifications();
       } else if (nextAppState === 'background') {
-        console.log('App went to background - notifications will be queued');
+        return;
       }
     });
   }
@@ -308,75 +308,5 @@ class BankNotificationService {
       return 0;
     }
   }
-
-  // TEST METHODS - Remove in production
-  testVietcombankNotification() {
-    console.log('🧪 Testing Vietcombank notification...');
-    
-    // Create the mock transaction data that would be parsed
-    const mockTransaction = {
-      amount: 150000,
-      type: 'expense' as const,
-      description: 'GRAB*TRIP Ho Chi Minh',
-      category: 'Transport',
-      currency: 'VND',
-    };
-    
-    console.log('🔄 Emitting TransactionAutoAdded event with data:', mockTransaction);
-    
-    // Directly emit the event to trigger the preview modal
-    DeviceEventEmitter.emit('TransactionAutoAdded', mockTransaction);
-    
-    console.log('✅ Test notification emitted successfully');
-  }
-
-  testTechcombankNotification() {
-    console.log('🧪 Testing Techcombank notification...');
-    
-    const mockTransaction = {
-      amount: 85000,
-      type: 'expense' as const,
-      description: 'HIGHLANDS COFFEE',
-      category: 'Food & Dining',
-      currency: 'VND',
-    };
-    
-    console.log('🔄 Emitting TransactionAutoAdded event with data:', mockTransaction);
-    DeviceEventEmitter.emit('TransactionAutoAdded', mockTransaction);
-    console.log('✅ Test notification emitted successfully');
-  }
-
-  testUSBankNotification() {
-    console.log('🧪 Testing US Bank notification...');
-    
-    const mockTransaction = {
-      amount: 25.50,
-      type: 'expense' as const,
-      description: 'STARBUCKS #1234',
-      category: 'Food & Dining',
-      currency: 'USD',
-    };
-    
-    console.log('🔄 Emitting TransactionAutoAdded event with data:', mockTransaction);
-    DeviceEventEmitter.emit('TransactionAutoAdded', mockTransaction);
-    console.log('✅ Test notification emitted successfully');
-  }
-
-  testIncomeNotification() {
-    console.log('🧪 Testing income notification...');
-    
-    const mockTransaction = {
-      amount: 5000000,
-      type: 'income' as const,
-      description: 'Salary transfer from COMPANY ABC',
-      category: 'Salary',
-      currency: 'VND',
-    };
-    
-    console.log('🔄 Emitting TransactionAutoAdded event with data:', mockTransaction);
-    DeviceEventEmitter.emit('TransactionAutoAdded', mockTransaction);
-    console.log('✅ Test notification emitted successfully');
-  }
 }
-
 export const bankNotificationService = new BankNotificationService();

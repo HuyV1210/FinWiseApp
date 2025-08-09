@@ -8,15 +8,6 @@ export const formatCurrency = (amount: number, currency: string = 'USD'): string
   }).format(amount);
 };
 
-// Get currency symbol from code
-const getCurrencySymbol = (currency: string) => {
-  try {
-    return (0).toLocaleString('en', { style: 'currency', currency }).replace(/\d|[.,\s]/g, '');
-  } catch {
-    return currency;
-  }
-};
-
 export const formatCurrencyShort = (amount: number, currency: string = 'USD'): string => {
   if (amount >= 1000000) {
     return `${(amount / 1000000).toFixed(1)}M`;

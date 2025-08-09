@@ -10,11 +10,6 @@ import CategoryPickerModal from '../../components/CategoryPickerModal';
 import { bankNotificationService } from '../../services/bankNotificationService';
 import { smsBankNotificationService } from '../../services/smsBankNotificationService';
 import { emailBankNotificationService } from '../../services/emailBankNotificationService';
-import { emailTransactionService } from '../../services/emailTransactionService';
-
-// Verify services are imported
-console.log('📱 ChatScreen: SMS service imported:', !!smsBankNotificationService);
-console.log('📧 ChatScreen: Email service imported:', !!emailBankNotificationService);
 
 interface Message {
   id: string;
@@ -333,16 +328,11 @@ export default function ChatScreen () {
       
       // Initialize SMS service
       const smsResult = await smsBankNotificationService.initialize();
-      console.log('📨 SMS monitoring:', smsResult ? 'enabled' : 'disabled');
       
-      // Initialize Email service with automatic monitoring
-      emailBankNotificationService.testEmailServiceStatus();
       const emailConfigStatus = emailBankNotificationService.getEmailConfigStatus();
       
       if (emailConfigStatus.configured) {
-        console.log('📧 Email configured - starting automatic monitoring...');
         await emailBankNotificationService.startEmailMonitoring();
-        console.log('🎯 Automatic email detection: ACTIVE');
       } else {
         console.log('📧 Email service: initialized (configuration needed for automatic detection)');
       }
@@ -414,7 +404,6 @@ export default function ChatScreen () {
         break;
       case 'skip':
         addBotResponse(`⏭️ Transaction skipped. No worries, you can always add it manually later.`);
-        // Remove from pending transactions after skipping
         setPendingTransactions(prev => {
           const newPending = { ...prev };
           delete newPending[messageId];
