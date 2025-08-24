@@ -173,6 +173,7 @@ class BankNotificationService {
         // Vietnamese banks - updated patterns
         /(?:Giao dich|GD)\s*[-:]?\s*([+-]?)([0-9,]+)\s*VND/i,
         /(?:Transaction|TXN)\s*[-:]?\s*([+-]?)([0-9,]+)\s*VND/i,
+        /Da chi:\s*([0-9,]+)\s*VND/i,
         // International patterns  
         /(?:Transaction|Payment|Debit|Credit)\s*[-:]?\s*([+-]?)\$([0-9,]+\.?\d*)/i,
         /(?:Transaction|Payment|Debit|Credit)\s*[-:]?\s*([+-]?)€([0-9,]+\.?\d*)/i,
@@ -182,20 +183,26 @@ class BankNotificationService {
       for (const pattern of patterns) {
         const match = text.match(pattern);
         if (match) {
-          const sign = match[1];
-          const amount = parseFloat(match[2].replace(/,/g, ''));
-          
+          let sign = match[1];
+          let amount;
+          if (pattern.source.startsWith('Da chi')) {
+            sign = '-';
+            amount = parseFloat(match[1].replace(/,/g, ''));
+          } else {
+            amount = parseFloat(match[2].replace(/,/g, ''));
+          }
           if (amount > 0) {
+            const rawDescription = this.extractDescription(text);
+            const description = rawDescription.replace(/^[+-]\s*/, '');
             const transaction = {
               type: sign === '-' ? 'debit' : 'credit',
               amount,
               rawText: text,
               date: new Date().toISOString(),
-              description: this.extractDescription(text),
+              description,
               category: this.guessCategory(text),
               currency: this.extractCurrency(text)
             };
-            
             console.log('✅ Successfully parsed transaction:', transaction);
             return transaction;
           }
