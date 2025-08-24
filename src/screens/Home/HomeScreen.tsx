@@ -627,7 +627,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     gap: 16,
-    marginBottom: 24,
+    marginBottom: 5,
   },
   summaryBox: {
     flex: 1,

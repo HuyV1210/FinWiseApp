@@ -163,6 +163,16 @@ FINWISE uses a modular architecture:
 - Functions for formatting currency, validating data, and managing app logic.
 - Reusable utility modules for maintainability.
 
+#### 4.2.7 Real-time Chat Interface
+- Provides a modern, WhatsApp-like chat interface for seamless user interaction with the AI assistant.
+- Features real-time messaging with Firebase Firestore synchronization across devices.
+- Displays both regular chat messages and transaction notifications as interactive chat bubbles.
+- Integrates bank notification processing directly into the chat flow for immediate transaction categorization.
+- Supports AI-enhanced transaction text generation using Gemini API for natural language descriptions.
+- Includes category selection modal for transaction classification with dual Firestore collection updates.
+- Implements LinearGradient backgrounds and modern UI components for enhanced user experience.
+- Handles both user-initiated conversations and system-generated transaction messages in a unified interface.
+
 ### 4.3 Code Structure
 
 - `src/components`: UI components (buttons, modals, etc.).
@@ -625,6 +635,824 @@ A controlled study with 25 participants (ages 22-45) over 4 weeks evaluated real
 ### 5.4 Comparison with Existing Solutions
 
 #### 5.4.1 Competitive Analysis
+
+---
+
+## Appendices
+
+### Appendix B: Technical Implementation Details
+
+#### B.1 Complete Code Samples
+
+##### B.1.1 Bank Notification Service Implementation
+```typescript
+// BankNotificationService.ts - Complete Implementation
+import { AppState, DeviceEventEmitter } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Singleton instance tracker
+let singletonInstance: BankNotificationService | null = null;
+
+class BankNotificationService {
+  private static instance: BankNotificationService | null = null;
+  private processedTransactions: Set<string> = new Set();
+  private lastProcessedTimestamps: Record<string, number> = {};
+  private DUPLICATE_WINDOW_MS = 60000; // 1 min cooldown
+  private listeners: { [event: string]: Function[] } = {};
+  private isInitialized = false;
+
+  constructor() {
+    if (singletonInstance) {
+      return singletonInstance;
+    }
+    
+    console.log('🆕 Creating new BankNotificationService instance');
+    singletonInstance = this;
+    this.initializeService();
+  }
+
+  private async initializeService() {
+    if (this.isInitialized) return;
+    
+    console.log('🔧 Initializing BankNotificationService...');
+    await this.loadProcessedTransactions();
+    this.setupDeviceEventListener();
+    this.isInitialized = true;
+    console.log('✅ BankNotificationService initialized successfully');
+  }
+
+  private setupDeviceEventListener() {
+    DeviceEventEmitter.removeAllListeners('BankNotificationReceived');
+    
+    DeviceEventEmitter.addListener('BankNotificationReceived', (notification) => {
+      console.log('📨 Received DeviceEventEmitter BankNotificationReceived:', notification);
+      this.handleBankNotification(notification);
+    });
+    
+    console.log('👂 DeviceEventEmitter listener set up for BankNotificationReceived');
+  }
+
+  // ACB Bank specific pattern parsing
+  private parseNotificationText(text: string) {
+    try {
+      console.log('🔍 Parsing notification text:', text);
+      
+      // ACB Bank specific pattern: "ACB: TK 123456789 (-1,500,000 VND) luc 09/08/2025 19:55:12."
+      const acbPattern = /ACB:\s*TK\s*\d+\s*\(([+-]?)([0-9,]+)\s*VND\)/i;
+      const acbMatch = text.match(acbPattern);
+      if (acbMatch) {
+        const sign = acbMatch[1];
+        const amount = parseFloat(acbMatch[2].replace(/,/g, ''));
+        
+        if (amount > 0) {
+          const transaction = {
+            type: sign === '-' ? 'debit' : 'credit',
+            amount,
+            rawText: text,
+            date: new Date().toISOString(),
+            description: this.extractDescription(text),
+            category: this.guessCategory(text),
+            currency: 'VND'
+          };
+          
+          console.log('✅ Successfully parsed ACB transaction:', transaction);
+          return transaction;
+        }
+      }
+      
+      console.log('❌ Could not parse transaction from text');
+      return null;
+    } catch (error) {
+      console.error('❌ Error parsing notification text:', error);
+      return null;
+    }
+  }
+
+  private extractDescription(text: string): string {
+    // ACB specific: Extract content after "ND:"
+    const acbContentMatch = text.match(/ND:\s*(.+?)(?:\.|$)/i);
+    if (acbContentMatch) {
+      return acbContentMatch[1].trim();
+    }
+    
+    return 'Bank Transaction';
+  }
+
+  public async handleBankNotification(notification: any) {
+    try {
+      const { title, text, packageName } = notification;
+      const messageText = text || title || '';
+      const currentTime = Date.now();
+
+      console.log('🔔 [HANDLER] Received bank notification:', { packageName, title, text });
+
+      if (!this.isBankApp(packageName)) {
+        console.log('❌ [HANDLER] Not a bank app, ignoring:', packageName);
+        return;
+      }
+
+      const parsedTransaction = this.parseNotificationText(messageText);
+      if (parsedTransaction) {
+        console.log('💰 [HANDLER] Transaction parsed successfully:', parsedTransaction);
+        
+        const transactionMessage = {
+          id: `tx_${currentTime}`,
+          text: `💳 ${parsedTransaction.type === 'debit' ? '-' : '+'}${parsedTransaction.amount.toLocaleString()} ${parsedTransaction.currency}\n${parsedTransaction.description}`,
+          sender: 'bot',
+          timestamp: new Date(),
+          isTransaction: true,
+          transactionData: {
+            ...parsedTransaction,
+            source: 'Bank Notification',
+          },
+        };
+        
+        console.log('📤 [HANDLER] Emitting TransactionChatMessage:', transactionMessage);
+        DeviceEventEmitter.emit('TransactionChatMessage', transactionMessage);
+      }
+    } catch (error) {
+      console.error('❌ [HANDLER] Error handling bank notification:', error);
+    }
+  }
+}
+
+export default new BankNotificationService();
+```
+
+##### B.1.2 Chat Service with Firebase Integration
+```typescript
+// chat.ts - Complete Chat Service Implementation
+import { collection, addDoc, query, orderBy, onSnapshot, Timestamp, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { firestore, auth } from '../../services/firebase';
+import { GEMINI_API_KEY } from '@env';
+
+export type ChatMessage = {
+  id?: string;
+  text: string;
+  createdAt: Date;
+  userId: string;
+  sender: 'user' | 'bot';
+  isTransaction?: boolean;
+  transactionData?: any;
+};
+
+export type BotResponse = {
+  message: string;
+  parsedTransaction?: {
+    amount: number;
+    type: 'income' | 'expense';
+    description: string;
+    currency: string;
+  };
+};
+
+// Send message to Firestore
+export async function sendMessage(
+  userId: string, 
+  text: string, 
+  sender: 'user' | 'bot', 
+  transactionData?: any
+): Promise<void> {
+  try {
+    const messageData: any = {
+      text,
+      sender,
+      userId,
+      createdAt: Timestamp.now(),
+    };
+
+    if (transactionData) {
+      messageData.isTransaction = true;
+      messageData.transactionData = transactionData;
+    }
+
+    await addDoc(collection(firestore, 'chats'), messageData);
+    console.log('✅ Message sent to Firestore successfully');
+  } catch (error) {
+    console.error('❌ Error sending message to Firestore:', error);
+    throw error;
+  }
+}
+
+// Get bot response with AI integration
+export async function getBotResponse(userMessage: string): Promise<BotResponse> {
+  const lowerMessage = userMessage.toLowerCase().trim();
+  
+  // Parse natural language transactions
+  const transactionPattern = /(?:spent|expense|chi|mua)\s+([\d,]+)k?\s+(?:on\s+|cho\s+)?(.+)/i;
+  const match = lowerMessage.match(transactionPattern);
+  
+  if (match) {
+    const [, amountStr, description] = match;
+    let amount = parseFloat(amountStr.replace(/,/g, ''));
+    if (amountStr.includes('k')) amount *= 1000;
+    
+    return {
+      message: `I found an expense: ${amount.toLocaleString()} VND for ${description}. Would you like to save this transaction?`,
+      parsedTransaction: {
+        amount,
+        type: 'expense',
+        description: description.trim(),
+        currency: 'VND'
+      }
+    };
+  }
+
+  // Balance inquiry
+  if (/balance|so du|tien/i.test(lowerMessage)) {
+    try {
+      const user = auth.currentUser;
+      if (user) {
+        const statsData = await getSpendingAnalysis(user.uid, 'month');
+        const balance = statsData.totalIncome - statsData.totalExpenses;
+        return {
+          message: `Your current balance this month: ${balance.toLocaleString()} VND\nIncome: ${statsData.totalIncome.toLocaleString()} VND\nExpenses: ${statsData.totalExpenses.toLocaleString()} VND`
+        };
+      }
+    } catch (error) {
+      console.error('Error fetching balance:', error);
+    }
+  }
+
+  // Use Gemini AI for general responses
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: userMessage }] }],
+          generationConfig: { 
+            temperature: 0.7, 
+            maxOutputTokens: 150,
+            topK: 20,
+            topP: 0.9
+          }
+        })
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      const aiMessage = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      
+      if (aiMessage) {
+        return { message: aiMessage };
+      }
+    }
+  } catch (error) {
+    console.error('Error calling Gemini API:', error);
+  }
+
+  return { message: "I'm here to help with your finances! You can ask me about your balance, add expenses, or get financial tips." };
+}
+
+// Listen for real-time chat messages
+export function listenForMessages(userId: string, callback: (messages: ChatMessage[]) => void) {
+  const q = query(
+    collection(firestore, 'chats'),
+    where('userId', '==', userId),
+    orderBy('createdAt', 'desc')
+  );
+
+  return onSnapshot(q, (snapshot) => {
+    const messages: ChatMessage[] = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate() || new Date(),
+    })) as ChatMessage[];
+
+    callback(messages);
+  });
+}
+
+// Get spending analysis for balance calculations
+export async function getSpendingAnalysis(userId: string, period: 'week' | 'month' | 'year') {
+  const now = new Date();
+  let startDate: Date;
+
+  switch (period) {
+    case 'week':
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+      break;
+    case 'month':
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      break;
+    case 'year':
+      startDate = new Date(now.getFullYear(), 0, 1);
+      break;
+  }
+
+  const q = query(
+    collection(firestore, 'transactions'),
+    where('userId', '==', userId),
+    where('date', '>=', Timestamp.fromDate(startDate)),
+    where('date', '<=', Timestamp.fromDate(now))
+  );
+
+  const snapshot = await getDocs(q);
+  const transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+  const totalIncome = transactions
+    .filter(t => t.type === 'income')
+    .reduce((sum, t) => sum + (t.price || 0), 0);
+
+  const totalExpenses = transactions
+    .filter(t => t.type === 'expense')
+    .reduce((sum, t) => sum + (t.price || 0), 0);
+
+  return {
+    totalIncome,
+    totalExpenses,
+    transactions
+  };
+}
+```
+
+##### B.1.3 Authentication Context Implementation
+```typescript
+// AuthContext.tsx - Complete Authentication Implementation
+import React, { createContext, useEffect, useState } from 'react'
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { auth } from '../services/firebase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import bankNotificationService from '../services/bankNotificationService';
+
+interface AuthContextProps {
+    user: User | null,
+    loading: boolean;
+    isAuthenticated: boolean;
+    validateToken: () => Promise<boolean>;
+    clearTokens: () => Promise<void>;
+    storeAuthToken: (token: string) => Promise<void>;
+}
+
+export const AuthContext = createContext<AuthContextProps>({
+    user: null,
+    loading: true,
+    isAuthenticated: false,
+    validateToken: async () => false,
+    clearTokens: async () => {},
+    storeAuthToken: async () => {},
+});
+
+export const AuthProvider = ({ children }: {children: React.ReactNode}) => {
+    const [user, setUser] = useState<User | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+    // Store authentication token with timestamp
+    const storeAuthToken = async (token: string) => {
+        try {
+            await AsyncStorage.setItem('authToken', token);
+            await AsyncStorage.setItem('authTimestamp', Date.now().toString());
+            console.log('✅ Auth token stored successfully');
+        } catch (error) {
+            console.error('❌ Error storing auth token:', error);
+        }
+    };
+
+    // Validate stored token with expiration check
+    const validateToken = async (): Promise<boolean> => {
+        try {
+            const token = await AsyncStorage.getItem('authToken');
+            const timestamp = await AsyncStorage.getItem('authTimestamp');
+            
+            if (!token || !timestamp) {
+                return false;
+            }
+
+            // Check if token is expired (24 hours)
+            const tokenAge = Date.now() - parseInt(timestamp);
+            const isExpired = tokenAge > (24 * 60 * 60 * 1000);
+            
+            return !isExpired && user !== null;
+        } catch (error) {
+            console.error('Token validation error:', error);
+            return false;
+        }
+    };
+
+    // Clear authentication tokens
+    const clearTokens = async () => {
+        try {
+            await AsyncStorage.multiRemove(['authToken', 'authTimestamp']);
+            console.log('✅ Auth tokens cleared successfully');
+        } catch (error) {
+            console.error('❌ Error clearing auth tokens:', error);
+        }
+    };
+
+    // Firebase auth state listener
+    useEffect(() => {
+        const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+            console.log('🔐 Auth state changed:', firebaseUser ? 'User logged in' : 'User logged out');
+            setUser(firebaseUser);
+            setIsAuthenticated(!!firebaseUser);
+            setLoading(false);
+            
+            if (firebaseUser) {
+                // Store user token when authenticated
+                const token = await firebaseUser.getIdToken();
+                await storeAuthToken(token);
+                
+                // Initialize background services for authenticated users
+                try {
+                    await bankNotificationService.initialize();
+                    console.log('✅ Bank notification service initialized for user');
+                } catch (error) {
+                    console.error('❌ Error initializing bank notification service:', error);
+                }
+            } else {
+                // Clear tokens when user logs out
+                await clearTokens();
+            }
+        });
+
+        return () => unsubscribe();
+    }, []);
+
+    const value = {
+        user,
+        loading,
+        isAuthenticated,
+        validateToken,
+        clearTokens,
+        storeAuthToken
+    };
+
+    return (
+        <AuthContext.Provider value={value}>
+            {children}
+        </AuthContext.Provider>
+    );
+};
+```
+
+#### B.2 Firebase Configuration
+```typescript
+// firebase.ts - Firebase Configuration
+import { initializeApp, getApps } from 'firebase/app';
+import { getAuth, initializeAuth, getReactNativePersistence } from 'firebase/auth';
+import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
+import { getMessaging } from 'firebase/messaging';
+import ReactNativeAsyncStorage from '@react-native-async-storage/async-storage';
+
+const firebaseConfig = {
+  apiKey: "your-api-key",
+  authDomain: "your-project.firebaseapp.com",
+  projectId: "your-project-id",
+  storageBucket: "your-project.appspot.com",
+  messagingSenderId: "your-sender-id",
+  appId: "your-app-id"
+};
+
+// Initialize Firebase
+let app;
+if (getApps().length === 0) {
+  app = initializeApp(firebaseConfig);
+} else {
+  app = getApps()[0];
+}
+
+// Initialize Auth with AsyncStorage persistence
+export const auth = initializeAuth(app, {
+  persistence: getReactNativePersistence(ReactNativeAsyncStorage)
+});
+
+// Initialize Firestore
+export const firestore = getFirestore(app);
+
+// Initialize Cloud Messaging
+export const messaging = getMessaging(app);
+
+export default app;
+```
+
+### Appendix C: Database Schema and Configuration
+
+#### C.1 Firestore Collections Structure
+```json
+{
+  "users": {
+    "userId": {
+      "email": "string",
+      "username": "string", 
+      "avatar": "string",
+      "avatarUrl": "string",
+      "joinDate": "string",
+      "createdAt": "timestamp",
+      "updatedAt": "timestamp"
+    }
+  },
+  "transactions": {
+    "transactionId": {
+      "userId": "string",
+      "type": "income | expense",
+      "price": "number",
+      "category": "string",
+      "title": "string",
+      "note": "string",
+      "date": "timestamp",
+      "createdAt": "timestamp",
+      "currency": "VND | USD | EUR",
+      "source": "Manual | Bank Notification | Chat"
+    }
+  },
+  "chats": {
+    "messageId": {
+      "userId": "string",
+      "text": "string",
+      "sender": "user | bot",
+      "createdAt": "timestamp",
+      "isTransaction": "boolean",
+      "transactionData": {
+        "amount": "number",
+        "type": "debit | credit",
+        "description": "string",
+        "category": "string",
+        "currency": "string",
+        "source": "string"
+      }
+    }
+  },
+  "budgets": {
+    "userId": {
+      "monthlyIncome": "number",
+      "totalBudget": "number",
+      "categoryLimits": {
+        "Food & Dining": "number",
+        "Transportation": "number",
+        "Shopping": "number",
+        "Bills & Utilities": "number",
+        "Entertainment": "number",
+        "Health & Medical": "number",
+        "Other": "number"
+      },
+      "createdAt": "timestamp",
+      "updatedAt": "timestamp"
+    }
+  },
+  "notifications": {
+    "notificationId": {
+      "userId": "string",
+      "title": "string",
+      "message": "string",
+      "type": "budget_alert | transaction_confirm | reminder",
+      "read": "boolean",
+      "date": "timestamp",
+      "createdAt": "timestamp"
+    }
+  }
+}
+```
+
+#### C.2 Firestore Security Rules
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can only access their own user document
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Users can only access their own transactions
+    match /transactions/{transactionId} {
+      allow read, write: if request.auth != null && 
+        resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && 
+        request.resource.data.userId == request.auth.uid;
+    }
+    
+    // Users can only access their own chat messages
+    match /chats/{messageId} {
+      allow read, write: if request.auth != null && 
+        resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && 
+        request.resource.data.userId == request.auth.uid;
+    }
+    
+    // Users can only access their own budget
+    match /budgets/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Users can only access their own notifications
+    match /notifications/{notificationId} {
+      allow read, write: if request.auth != null && 
+        resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && 
+        request.resource.data.userId == request.auth.uid;
+    }
+  }
+}
+```
+
+#### C.3 Database Indexes
+```json
+{
+  "indexes": [
+    {
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "transactions", 
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "chats",
+      "queryScope": "COLLECTION", 
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "read", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
+```
+
+### Appendix E: Installation and Deployment Guide
+
+#### E.1 Prerequisites
+```bash
+# Required software versions
+Node.js: >= 18.0.0
+React Native CLI: >= 2.0.1
+Android Studio: Latest stable version
+Xcode: >= 13.0 (for iOS development)
+CocoaPods: >= 1.11.0 (for iOS)
+```
+
+#### E.2 Development Setup
+```bash
+# Clone the repository
+git clone https://github.com/HuyV1210/FinWiseApp.git
+cd FinWiseApp
+
+# Install dependencies
+npm install
+
+# Install iOS dependencies (macOS only)
+cd ios && pod install && cd ..
+
+# Install Android dependencies
+# Ensure Android SDK is properly configured
+```
+
+#### E.3 Environment Configuration
+Create a `.env` file in the root directory:
+```env
+# Gemini AI API Key
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Firebase Configuration (optional if using google-services files)
+FIREBASE_API_KEY=your_firebase_api_key
+FIREBASE_PROJECT_ID=your_firebase_project_id
+FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+FIREBASE_STORAGE_BUCKET=your_project.appspot.com
+FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+FIREBASE_APP_ID=your_app_id
+```
+
+#### E.4 Firebase Setup
+```bash
+# 1. Create a new Firebase project at https://console.firebase.google.com
+# 2. Enable Authentication with Email/Password
+# 3. Create a Firestore database
+# 4. Download configuration files:
+
+# For Android: Download google-services.json
+# Place in: android/app/google-services.json
+
+# For iOS: Download GoogleService-Info.plist  
+# Place in: ios/FinWiseApp/GoogleService-Info.plist
+
+# 5. Configure Firestore security rules (see Appendix C.2)
+# 6. Set up Firestore indexes (see Appendix C.3)
+```
+
+#### E.5 Running the Application
+```bash
+# Start Metro bundler
+npm start
+
+# Run on Android (ensure emulator/device is connected)
+npm run android
+# or
+npx react-native run-android
+
+# Run on iOS (macOS only)
+npm run ios  
+# or
+npx react-native run-ios
+
+# Run on specific iOS simulator
+npx react-native run-ios --simulator="iPhone 15 Pro"
+```
+
+#### E.6 Build for Production
+
+##### Android APK Build
+```bash
+# Generate signed APK
+cd android
+./gradlew assembleRelease
+
+# APK location: android/app/build/outputs/apk/release/app-release.apk
+```
+
+##### iOS Build
+```bash
+# Open iOS project in Xcode
+open ios/FinWiseApp.xcworkspace
+
+# In Xcode:
+# 1. Select "Any iOS Device" as target
+# 2. Product -> Archive
+# 3. Follow App Store submission process
+```
+
+#### E.7 Troubleshooting Common Issues
+```bash
+# Clear Metro cache
+npx react-native start --reset-cache
+
+# Clean and rebuild
+# Android
+cd android && ./gradlew clean && cd ..
+npm run android
+
+# iOS  
+cd ios && xcodebuild clean && cd ..
+npm run ios
+
+# Reset all caches
+npx react-native start --reset-cache
+rm -rf node_modules && npm install
+cd ios && pod install && cd ..
+
+# Fix permission issues (Android)
+adb shell pm grant com.finwiseapp android.permission.RECEIVE_SMS
+adb shell pm grant com.finwiseapp android.permission.READ_SMS
+```
+
+#### E.8 Project Dependencies
+```json
+{
+  "key_dependencies": {
+    "react-native": "0.80.2",
+    "firebase": "^11.10.0", 
+    "@react-navigation/native": "^7.1.17",
+    "react-native-linear-gradient": "^2.8.3",
+    "react-native-vector-icons": "^10.3.0",
+    "@react-native-async-storage/async-storage": "^1.24.0",
+    "react-native-image-picker": "^8.2.1",
+    "@react-native-firebase/app": "^22.4.0",
+    "@react-native-firebase/auth": "^22.4.0", 
+    "@react-native-firebase/firestore": "^22.4.0",
+    "@react-native-firebase/messaging": "^22.4.0"
+  }
+}
+```
+
+#### E.9 Performance Optimization Tips
+```bash
+# Enable Hermes (Android)
+# In android/app/build.gradle:
+# enableHermes: true
+
+# Enable Flipper for debugging
+# Already configured in React Native 0.80.2
+
+# Optimize images
+# Use WebP format for better compression
+# Implement lazy loading for large lists
+
+# Bundle size optimization
+npx react-native bundle --platform android --dev false --entry-file index.js --bundle-output android/app/src/main/assets/index.android.bundle
+```
 
 | Feature | FINWISE | Mint | YNAB | Momo (Vietnam) |
 |---------|---------|------|------|----------------|

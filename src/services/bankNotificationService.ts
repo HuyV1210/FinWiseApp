@@ -1,192 +1,179 @@
-import { NativeModules, DeviceEventEmitter, PermissionsAndroid, Platform, AppState, Alert, Linking } from 'react-native';
-import { addDoc, collection } from 'firebase/firestore';
-import { auth, firestore } from './firebase';
+import { AppState, DeviceEventEmitter } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-interface ParsedTransaction {
-  amount: number;
-  type: 'income' | 'expense';
-  description: string;
-  category?: string;
-  bankName?: string;
-  currency?: string;
-}
+// Singleton instance tracker
+let singletonInstance: BankNotificationService | null = null;
 
 class BankNotificationService {
-  private isListening = false;
-  private eventListener: any = null;
-  private appStateListener: any = null;
-  private static STORAGE_KEY = 'pending_bank_notifications';
-  private openAppSettings() {
-    Linking.openSettings();
-  }
+  private static instance: BankNotificationService | null = null;
+  private processedTransactions: Set<string> = new Set();
+  private lastProcessedTimestamps: Record<string, number> = {};
+  private DUPLICATE_WINDOW_MS = 60000; // 1 min cooldown
+  private listeners: { [event: string]: Function[] } = {};
+  private isInitialized = false;
 
-  async initialize(): Promise<boolean> {
-    try {
-      // Process any notifications that were missed while app was closed
-      await this.processPendingNotifications();
-      
-      // Set up app state monitoring
-      this.setupAppStateMonitoring();
-      
-      if (Platform.OS === 'android') {
-        const enabled = await NativeModules.BankNotificationModule.isNotificationListenerEnabled();
-        if (enabled) {
-          this.startListening();
-          return true;
-        } else {
-          Alert.alert(
-            'Permission Required',
-            'Please enable notification access for FinWise in system settings to track bank transactions.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => this.openAppSettings() },
-            ]
-          );
-          return false;
-        }
-      }
-      return false;
-    } catch (error) {
-      console.error('Error initializing bank notification service:', error);
-      return false;
+  constructor() {
+    if (singletonInstance) {
+      return singletonInstance;
     }
+    
+    console.log('🆕 Creating new BankNotificationService instance');
+    singletonInstance = this;
+    this.initializeService();
   }
 
-  private setupAppStateMonitoring() {
-    this.appStateListener = AppState.addEventListener('change', (nextAppState) => {
-      if (nextAppState === 'active') {
-        this.processPendingNotifications();
-      } else if (nextAppState === 'background') {
-        return;
-      }
+  private async initializeService() {
+    if (this.isInitialized) return;
+    
+    console.log('🔧 Initializing BankNotificationService...');
+    await this.loadProcessedTransactions();
+    this.setupDeviceEventListener();
+    this.isInitialized = true;
+    console.log('✅ BankNotificationService initialized successfully');
+  }
+
+  private setupDeviceEventListener() {
+    // Remove any existing listeners first
+    DeviceEventEmitter.removeAllListeners('BankNotificationReceived');
+    
+    // Add our listener - using the correct event name from Kotlin
+    DeviceEventEmitter.addListener('BankNotificationReceived', (notification) => {
+      console.log('📨 Received DeviceEventEmitter BankNotificationReceived:', notification);
+      this.handleBankNotification(notification);
     });
-  }
-
-  private async processPendingNotifications() {
-    try {
-      const pending = await AsyncStorage.getItem(BankNotificationService.STORAGE_KEY);
-      if (pending) {
-        const notifications = JSON.parse(pending);
-        
-        console.log(`Processing ${notifications.length} pending bank notifications`);
-        
-        // Process each notification
-        for (const notification of notifications) {
-          await this.handleBankNotification(notification);
-        }
-        
-        // Clear processed notifications
-        await AsyncStorage.removeItem(BankNotificationService.STORAGE_KEY);
-      }
-    } catch (error) {
-      console.error('Error processing pending notifications:', error);
-    }
-  }
-
-  private async storePendingNotification(notification: any) {
-    try {
-      const existing = await AsyncStorage.getItem(BankNotificationService.STORAGE_KEY);
-      const notifications = existing ? JSON.parse(existing) : [];
-      notifications.push({
-        ...notification,
-        receivedAt: new Date().toISOString()
-      });
-      await AsyncStorage.setItem(BankNotificationService.STORAGE_KEY, JSON.stringify(notifications));
-      console.log('Stored pending bank notification for later processing');
-    } catch (error) {
-      console.error('Error storing pending notification:', error);
-    }
-  }
-
-  startListening() {
-    if (this.isListening) return;
-
-    this.isListening = true;
     
-    // Listen for bank notifications
-    this.eventListener = DeviceEventEmitter.addListener(
-      'BankNotificationReceived',
-      this.handleBankNotification.bind(this)
-    );
-
-    console.log('Bank notification service started listening');
+    console.log('👂 DeviceEventEmitter listener set up for BankNotificationReceived');
   }
 
-  stopListening() {
-    if (!this.isListening) return;
-
-    this.isListening = false;
-    
-    if (this.eventListener) {
-      this.eventListener.remove();
-      this.eventListener = null;
+  // Simple event emitter implementation for React Native
+  public on(event: string, listener: Function) {
+    if (!this.listeners[event]) {
+      this.listeners[event] = [];
     }
-
-    if (this.appStateListener) {
-      this.appStateListener.remove();
-      this.appStateListener = null;
-    }
-
-    console.log('Bank notification service stopped listening');
+    this.listeners[event].push(listener);
   }
 
-  private async handleBankNotification(notification: any) {
+  public emit(event: string, data: any) {
+    if (this.listeners[event]) {
+      this.listeners[event].forEach(listener => listener(data));
+    }
+  }
+
+  public off(event: string, listener: Function) {
+    if (this.listeners[event]) {
+      this.listeners[event] = this.listeners[event].filter(l => l !== listener);
+    }
+  }
+
+  private async loadProcessedTransactions() {
     try {
-      console.log('Received bank notification:', notification);
-      
-      const { title, text, packageName } = notification;
-      
-      // Check if it's from a recognized bank app
-      if (!this.isBankApp(packageName)) {
-        return;
-      }
-
-      // Parse the notification text
-      const parsedTransaction = this.parseNotificationText(text || title);
-      
-      if (parsedTransaction) {
-        // Check if app is in foreground
-        if (AppState.currentState === 'active') {
-          // App is active - show preview modal immediately
-          await this.processDetectedTransaction(parsedTransaction);
-        } else {
-          // App is backgrounded - store for later processing
-          await this.storePendingNotification({
-            ...notification,
-            parsedTransaction
-          });
-        }
+      const stored = await AsyncStorage.getItem('processedTransactions');
+      if (stored) {
+        this.processedTransactions = new Set(JSON.parse(stored));
       }
     } catch (error) {
-      console.error('Error handling bank notification:', error);
+      console.error('❌ Error loading processed transactions:', error);
+    }
+  }
+
+  private async saveProcessedTransactions() {
+    try {
+      await AsyncStorage.setItem(
+        'processedTransactions',
+        JSON.stringify([...this.processedTransactions])
+      );
+    } catch (error) {
+      console.error('❌ Error saving processed transactions:', error);
     }
   }
 
   private isBankApp(packageName: string): boolean {
-    const bankApps = [
+    const bankPackages = [
+      // Vietnamese banks
       'com.vietcombank',
-      'com.techcombank',
+      'com.techcombank', 
       'com.mb.mbanking',
       'com.vnpay.mbanking',
+      'com.acb',
+      'com.bidv',
+      'com.vietinbank',
+      'com.sacombank',
+      'com.vpbank',
+      'com.agribank',
+      
+      // International banks
       'com.chase.sig.android',
       'com.bankofamerica.digitalbanking',
       'com.wellsfargo.mobile',
       'com.citibank.mobile',
-      // Add more bank package names as needed
+      
+      // For testing
+      'com.syslab.notigenerator',
+      'com.test',
+      'com.finwiseapp'
     ];
-
-    return bankApps.some(app => packageName.includes(app));
+    
+    return bankPackages.some(bank => packageName.includes(bank));
   }
 
-  private parseNotificationText(text: string): ParsedTransaction | null {
+  private generateNotificationHash(packageName: string, text: string): string {
+    const stableText = (text || '')
+      .replace(/\d{1,2}\/\d{1,2}\/\d{2,4}/g, '') // remove dates
+      .replace(/so du.*$/i, '')                  // remove balance info
+      .replace(/\s+/g, ' ')                      // normalize spaces
+      .trim()
+      .toLowerCase();
+
+    // Simple hash function that works in React Native
+    const combined = packageName + stableText;
+    let hash = 0;
+    for (let i = 0; i < combined.length; i++) {
+      const char = combined.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return Math.abs(hash).toString(36);
+  }
+
+  private isGroupedNotification(text: string): boolean {
+    return /transactions?\s+\d+\s+items?/i.test(text) ||
+           /summary\s+of\s+\d+\s+transactions?/i.test(text) ||
+           /multiple\s+transactions?/i.test(text);
+  }
+
+  private parseNotificationText(text: string) {
     try {
+      console.log('🔍 Parsing notification text:', text);
+      
+      // ACB Bank specific pattern: "ACB: TK 123456789 (-1,500,000 VND) luc 09/08/2025 19:55:12."
+      const acbPattern = /ACB:\s*TK\s*\d+\s*\(([+-]?)([0-9,]+)\s*VND\)/i;
+      const acbMatch = text.match(acbPattern);
+      if (acbMatch) {
+        const sign = acbMatch[1];
+        const amount = parseFloat(acbMatch[2].replace(/,/g, ''));
+        
+        if (amount > 0) {
+          const transaction = {
+            type: sign === '-' ? 'debit' : 'credit',
+            amount,
+            rawText: text,
+            date: new Date().toISOString(),
+            description: this.extractDescription(text),
+            category: this.guessCategory(text),
+            currency: 'VND'
+          };
+          
+          console.log('✅ Successfully parsed ACB transaction:', transaction);
+          return transaction;
+        }
+      }
+      
       // Common patterns for bank notifications
       const patterns = [
-        // Vietnamese banks
+        // Vietnamese banks - updated patterns
         /(?:Giao dich|GD)\s*[-:]?\s*([+-]?)([0-9,]+)\s*VND/i,
         /(?:Transaction|TXN)\s*[-:]?\s*([+-]?)([0-9,]+)\s*VND/i,
-        // International patterns
+        // International patterns  
         /(?:Transaction|Payment|Debit|Credit)\s*[-:]?\s*([+-]?)\$([0-9,]+\.?\d*)/i,
         /(?:Transaction|Payment|Debit|Credit)\s*[-:]?\s*([+-]?)€([0-9,]+\.?\d*)/i,
         /(?:Transaction|Payment|Debit|Credit)\s*[-:]?\s*([+-]?)£([0-9,]+\.?\d*)/i,
@@ -199,29 +186,47 @@ class BankNotificationService {
           const amount = parseFloat(match[2].replace(/,/g, ''));
           
           if (amount > 0) {
-            return {
+            const transaction = {
+              type: sign === '-' ? 'debit' : 'credit',
               amount,
-              type: sign === '-' ? 'expense' : 'income',
+              rawText: text,
+              date: new Date().toISOString(),
               description: this.extractDescription(text),
               category: this.guessCategory(text),
-              currency: this.extractCurrency(text),
+              currency: this.extractCurrency(text)
             };
+            
+            console.log('✅ Successfully parsed transaction:', transaction);
+            return transaction;
           }
         }
       }
 
+      console.log('❌ Could not parse transaction from text');
       return null;
     } catch (error) {
-      console.error('Error parsing notification text:', error);
+      console.error('❌ Error parsing notification text:', error);
       return null;
     }
   }
 
   private extractDescription(text: string): string {
     // Try to extract meaningful description from notification
+    
+    // ACB specific: Extract content after "ND:"
+    const acbContentMatch = text.match(/ND:\s*(.+?)(?:\.|$)/i);
+    if (acbContentMatch) {
+      return acbContentMatch[1].trim();
+    }
+    
     const cleanText = text
       .replace(/GD:|Transaction:|TXN:|Payment:/gi, '')
+      .replace(/ACB:\s*TK\s*\d+\s*\([^)]+\)\s*luc\s*[\d\/\s:]+\./gi, '') // Remove ACB header
       .replace(/[0-9,]+\s*(VND|USD|EUR|GBP)/gi, '')
+      .replace(/So du:.*?VND/gi, '') // Remove balance info
+      .replace(/tai\s+\w+\./gi, '') // Remove "tai ACB." etc
+      .replace(/Noi dung:\s*/gi, '') // Remove "Noi dung:" prefix
+      .replace(/[-:]\s*/g, '') // Remove leading dashes and colons
       .trim();
     
     return cleanText.length > 5 ? cleanText : 'Bank Transaction';
@@ -229,12 +234,12 @@ class BankNotificationService {
 
   private guessCategory(text: string): string {
     const categoryKeywords = {
-      'Food & Dining': ['restaurant', 'food', 'cafe', 'dining', 'eat'],
-      'Transport': ['taxi', 'uber', 'grab', 'bus', 'transport', 'fuel', 'gas'],
-      'Shopping': ['shop', 'market', 'store', 'mall', 'purchase'],
-      'Bills & Utilities': ['electric', 'water', 'internet', 'phone', 'bill'],
-      'Entertainment': ['cinema', 'movie', 'game', 'entertainment'],
-      'Health & Medical': ['hospital', 'clinic', 'pharmacy', 'medical'],
+      'Food & Dining': ['restaurant', 'food', 'cafe', 'dining', 'eat', 'com', 'an', 'quan an', 'nha hang'],
+      'Transport': ['taxi', 'uber', 'grab', 'bus', 'transport', 'fuel', 'gas', 'xe', 'xang', 'di chuyen'],
+      'Shopping': ['shop', 'market', 'store', 'mall', 'purchase', 'mua sam', 'sieu thi', 'cua hang'],
+      'Bills & Utilities': ['electric', 'water', 'internet', 'phone', 'bill', 'hoa don', 'dien', 'nuoc', 'tien dien', 'tien nuoc', 'internet', 'dien thoai'],
+      'Entertainment': ['cinema', 'movie', 'game', 'entertainment', 'rap chieu phim', 'game', 'giai tri'],
+      'Health & Medical': ['hospital', 'clinic', 'pharmacy', 'medical', 'benh vien', 'phong kham', 'thuoc'],
     };
 
     const lowerText = text.toLowerCase();
@@ -257,56 +262,154 @@ class BankNotificationService {
     return 'VND'; // Default
   }
 
-  private async processDetectedTransaction(transaction: ParsedTransaction) {
-    try {
-      const user = auth.currentUser;
-      if (!user) return;
+  private parseGroupedTransactions(text: string) {
+    const lines = text.split(/\n|;/).map(l => l.trim()).filter(Boolean);
+    const transactions = [];
 
-      console.log('Processing detected transaction:', transaction);
-      
-      // Emit event to show preview modal instead of auto-saving
-      DeviceEventEmitter.emit('TransactionAutoAdded', transaction);
+    for (const line of lines) {
+      const parsed = this.parseNotificationText(line);
+      if (parsed) {
+        transactions.push(parsed);
+      }
+    }
+    return transactions;
+  }
+
+  public async handleBankNotification(notification: any) {
+    try {
+      const { title, text, packageName } = notification;
+      const messageText = text || title || '';
+      const currentTime = Date.now();
+
+      console.log('🔔 [HANDLER] Received bank notification:', { packageName, title, text });
+
+      if (!this.isBankApp(packageName)) {
+        console.log('❌ [HANDLER] Not a bank app, ignoring:', packageName);
+        return;
+      }
+
+      console.log('✅ [HANDLER] Bank app detected, processing...');
+
+      const notificationId =
+        notification.notificationId ||
+        this.generateNotificationHash(packageName, messageText);
+
+      console.log('🆔 [HANDLER] Generated notification ID:', notificationId);
+
+      // Enhanced duplicate check with timestamp
+      if (this.processedTransactions.has(notificationId)) {
+        const lastTime = this.lastProcessedTimestamps[notificationId] || 0;
+        const timeDiff = currentTime - lastTime;
+        
+        console.log(`⚠️ [HANDLER] Duplicate detected. Last processed: ${timeDiff}ms ago`);
+        
+        if (timeDiff < this.DUPLICATE_WINDOW_MS) {
+          console.log('⏭️ [HANDLER] Within duplicate window, skipping');
+          return;
+        } else {
+          console.log('🔄 [HANDLER] Outside duplicate window, processing as new');
+        }
+      }
+
+      // Mark as processed immediately to prevent race conditions
+      this.processedTransactions.add(notificationId);
+      this.lastProcessedTimestamps[notificationId] = currentTime;
+      await this.saveProcessedTransactions();
+
+      console.log('💾 [HANDLER] Transaction marked as processed. Total:', this.processedTransactions.size);
+
+      // Grouped notification handling
+      if (this.isGroupedNotification(messageText)) {
+        console.log('📊 [HANDLER] Processing grouped notification');
+        const transactions = this.parseGroupedTransactions(messageText);
+        transactions.forEach(tx => this.emit('transaction', tx));
+        return;
+      }
+
+      // Single transaction
+      const parsedTransaction = this.parseNotificationText(messageText);
+      if (parsedTransaction) {
+        console.log('💰 [HANDLER] Transaction parsed successfully:', parsedTransaction);
+        
+        // Emit both for EventEmitter listeners and DeviceEventEmitter (for ChatScreen)
+        this.emit('transaction', parsedTransaction);
+        
+        // Also emit in format that ChatScreen expects
+        const transactionMessage = {
+          id: `tx_${currentTime}`,
+          text: `💳 ${parsedTransaction.type === 'debit' ? '-' : '+'}${parsedTransaction.amount.toLocaleString()} ${parsedTransaction.currency}\n${parsedTransaction.description}`,
+          sender: 'bot',
+          timestamp: new Date(),
+          isTransaction: true,
+          transactionData: {
+            ...parsedTransaction,
+            source: 'Bank Notification',
+          },
+        };
+        
+        console.log('📤 [HANDLER] Emitting TransactionChatMessage:', transactionMessage);
+        
+        // Try both event emission methods to ensure one works
+        DeviceEventEmitter.emit('TransactionChatMessage', transactionMessage);
+        
+        // Also try a simple test emission
+        console.log('🧪 [HANDLER] Testing DeviceEventEmitter...');
+        DeviceEventEmitter.emit('TestEvent', { test: 'Hello from service!' });
+      } else {
+        console.log('❌ [HANDLER] Could not parse transaction from notification');
+      }
 
     } catch (error) {
-      console.error('Error processing detected transaction:', error);
+      console.error('❌ [HANDLER] Error handling bank notification:', error);
     }
   }
 
-  // Get monitoring status for UI display
-  getStatus() {
+  // Helper method to clear processed transactions (for testing)
+  public async clearProcessedTransactions() {
+    try {
+      this.processedTransactions.clear();
+      this.lastProcessedTimestamps = {};
+      await AsyncStorage.removeItem('processedTransactions');
+      console.log('🧹 Cleared all processed transactions');
+    } catch (error) {
+      console.error('❌ Error clearing processed transactions:', error);
+    }
+  }
+
+  // Helper method to get status
+  public getStatus() {
     return {
-      isListening: this.isListening,
-      isAppActive: AppState.currentState === 'active',
-      canMonitorBackground: Platform.OS === 'android',
-      statusMessage: this.getStatusMessage()
+      processedCount: this.processedTransactions.size,
+      recentIds: Array.from(this.processedTransactions).slice(-3),
+      duplicateWindowMs: this.DUPLICATE_WINDOW_MS
     };
   }
 
-  private getStatusMessage(): string {
-    if (!this.isListening) {
-      return 'Bank monitoring is disabled';
-    }
-    
-    if (AppState.currentState === 'active') {
-      return 'Actively monitoring bank notifications';
-    } else {
-      return 'Will monitor when app is active';
-    }
+  // Test method to simulate a notification
+  public async testNotification(text: string, packageName: string = 'com.syslab.notigenerator') {
+    console.log('🧪 Testing notification:', { text, packageName });
+    await this.handleBankNotification({
+      title: 'Test Bank Notification',
+      text,
+      packageName,
+      notificationId: `test_${Date.now()}`
+    });
   }
 
-  // Check for pending notifications count
-  async getPendingNotificationsCount(): Promise<number> {
-    try {
-      const pending = await AsyncStorage.getItem(BankNotificationService.STORAGE_KEY);
-      if (pending) {
-        const notifications = JSON.parse(pending);
-        return notifications.length;
-      }
-      return 0;
-    } catch (error) {
-      console.error('Error getting pending notifications count:', error);
-      return 0;
-    }
+  // Optional methods for compatibility (no-op implementations)
+  public async initialize(): Promise<boolean> {
+    console.log('✅ Bank notification service is ready');
+    return true;
+  }
+
+  public stopListening() {
+    console.log('ℹ️ Bank notification service continues running');
+    // Service stays active for potential notifications
   }
 }
-export const bankNotificationService = new BankNotificationService();
+
+// Create singleton instance
+const bankNotificationServiceInstance = new BankNotificationService();
+
+// Export the singleton instance
+export default bankNotificationServiceInstance;

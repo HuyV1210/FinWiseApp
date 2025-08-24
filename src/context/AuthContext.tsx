@@ -2,7 +2,7 @@ import React, { createContext, useEffect, useState } from 'react'
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from '../services/firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { bankNotificationService } from '../services/bankNotificationService';
+import bankNotificationService from '../services/bankNotificationService';
 
 interface AuthContextProps {
     user: User | null,
@@ -96,21 +96,16 @@ export const AuthProvider = ({ children }: {children: React.ReactNode}) => {
                     
                     // Initialize bank notification service when user logs in
                     try {
-                        const initialized = await bankNotificationService.initialize();
-                        if (initialized) {
-                            console.log('Bank notification service initialized successfully');
-                        } else {
-                            console.log('Bank notification service requires additional permissions');
-                        }
+                        console.log('User authenticated - bank notification service is ready');
+                        // Service is already initialized when imported
                     } catch (error) {
-                        console.error('Error initializing bank notification service:', error);
+                        console.error('Error with bank notification service:', error);
                     }
                 } else {
                     // User is not authenticated, clear tokens
                     await clearTokens();
                     setIsAuthenticated(false);
-                    // Stop service when user logs out
-                    bankNotificationService.stopListening();
+                    // Service continues running for potential future logins
                 }
             } catch (error) {
                 console.error('Auth state change error:', error);
@@ -123,8 +118,7 @@ export const AuthProvider = ({ children }: {children: React.ReactNode}) => {
         
         return () => {
             unsubscribe();
-            // Clean up notification service
-            bankNotificationService.stopListening();
+            // Service continues running in background
         };
     }, []);
     
