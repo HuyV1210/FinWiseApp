@@ -444,7 +444,7 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins-ExtraBold',
     paddingTop: 100,
     textAlign: 'center',
-    paddingBottom: 60,
+    paddingBottom: 20,
   },
   label: {
     fontSize: 16,

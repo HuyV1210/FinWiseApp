@@ -29,7 +29,7 @@ interface CategoryData {
 }
 
 export default function Stats() {
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<'week' | 'month' | 'year'>('month');
   const [categoryData, setCategoryData] = useState<CategoryData[]>([]);
@@ -140,11 +140,14 @@ export default function Stats() {
     </TouchableOpacity>
   );
 
-  const StatCard = ({ title, value, icon, color }: { title: string; value: string; icon: string; color: string }) => (
-    <View style={styles.statCard}>
-      <View
-        style={[styles.statIcon, { backgroundColor: color }]}
-      >
+  const StatCard = ({ title, value, icon, color, onPress }: { title: string; value: string; icon: string; color: string; onPress?: () => void }) => (
+    <TouchableOpacity
+      style={styles.statCard}
+      activeOpacity={onPress ? 0.8 : 1}
+      onPress={onPress}
+      disabled={!onPress}
+    >
+      <View style={[styles.statIcon, { backgroundColor: color }]}>
         <Icon name={icon} size={24} color="#FFFFFF" />
       </View>
       <View style={styles.statContent}>
@@ -154,7 +157,7 @@ export default function Stats() {
           <Text style={[styles.statValue, { fontSize: 12, color: '#888', marginLeft: 4 }]}>{currency}</Text>
         </View>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 
   const CategoryItem = ({ item }: { item: CategoryData }) => (
@@ -213,18 +216,22 @@ export default function Stats() {
             value={formatCurrencyShort(totalIncome, currency)}
             icon="trending-up"
             color="#4CAF50"
+            onPress={() => navigation.navigate('StatsChart', { statType: 'Total Income' })}
           />
           <StatCard
             title="Total Expenses"
             value={formatCurrencyShort(totalExpenses, currency)}
             icon="trending-down"
             color="#FF6B6B"
+            onPress={() => navigation.navigate('StatsChart', { statType: 'Total Expenses' })}
           />
           <StatCard
             title="Balance"
             value={formatCurrencyShort(totalIncome - totalExpenses, currency)}
             icon="account-balance"
             color="#00B88D"
+            // You can add onPress for Balance if you want
+            onPress={() => navigation.navigate('StatsChart', { statType: 'Balance' })}
           />
         </View>
 

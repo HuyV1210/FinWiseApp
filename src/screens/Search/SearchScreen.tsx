@@ -5,6 +5,7 @@ import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Transaction } from '../../types/transaction';
 import { auth, firestore } from '../../services/firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
+import LinearGradient from 'react-native-linear-gradient';
 
 const SearchScreen: React.FC = () => {
   const navigation = useNavigation();
@@ -54,39 +55,71 @@ const SearchScreen: React.FC = () => {
   }, [queryText]);
 
   return (
+    <LinearGradient
+    colors={['#00D09E', '#FFFFFF']}
+    start={{ x: 0, y: 0 }}
+    end={{ x: 1, y: 1 }}
+    style={{ flex: 1 }}
+  >
     <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Icon name="arrow-back" size={28} color="#333" />
         </TouchableOpacity>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by title or category..."
-          value={queryText}
-          onChangeText={setQueryText}
-          autoFocus
-        />
+        <View style={styles.searchBar}>
+          <Icon name="search" size={22} color="#00D09E" style={{ marginRight: 6 }} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by title or category..."
+            value={queryText}
+            onChangeText={setQueryText}
+            autoFocus
+            placeholderTextColor="#00D09E"
+          />
+        </View>
       </View>
       <FlatList
         data={results}
         keyExtractor={item => item.id}
         renderItem={({ item }) => (
           <View style={styles.resultItem}>
-            <Text style={styles.resultTitle}>{item.title}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+              <Icon
+                name={item.type === 'income' ? 'trending-up' : 'trending-down'}
+                size={20}
+                color={item.type === 'income' ? '#00B88D' : '#FF6B6B'}
+                style={{ marginRight: 8 }}
+              />
+              <Text
+                style={styles.resultTitle}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {item.title}
+              </Text>
+            </View>
             <Text style={styles.resultCategory}>{item.category}</Text>
-            <Text style={styles.resultAmount}>{item.type === 'income' ? '+' : '-'}{item.price} VND</Text>
+            <Text
+              style={[
+                styles.resultAmount,
+                { color: item.type === 'income' ? '#00B88D' : '#FF6B6B' }
+              ]}
+            >
+              {item.type === 'income' ? '+' : '-'}
+              {item.price} VND
+            </Text>
           </View>
         )}
         ListEmptyComponent={<Text style={styles.emptyText}>{loading ? 'Searching...' : 'No results found.'}</Text>}
       />
     </View>
+  </LinearGradient>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F1FFF3',
     paddingTop: 50,
     paddingHorizontal: 16,
   },
@@ -99,14 +132,27 @@ const styles = StyleSheet.create({
     marginRight: 8,
     padding: 4,
   },
-  searchInput: {
+  searchBar: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
     borderWidth: 1,
     borderColor: '#00D09E',
     borderRadius: 8,
-    padding: 10,
-    fontSize: 16,
+    paddingHorizontal: 10,
     backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.07,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    paddingVertical: 10,
+    color: '#222',
+    backgroundColor: 'transparent',
   },
   resultItem: {
     backgroundColor: '#fff',
@@ -123,6 +169,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#222',
+    maxWidth: 200, // adjust as needed
   },
   resultCategory: {
     fontSize: 13,

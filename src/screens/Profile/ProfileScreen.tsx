@@ -1,17 +1,18 @@
-const ReactNative = require('react-native');
-const { StyleSheet, Text, TouchableOpacity, View, ScrollView, Alert, ActivityIndicator, Image } = ReactNative;
+import React, { useState, useEffect, useMemo, useContext } from 'react';
+import { StyleSheet, Text, TouchableOpacity, View, ScrollView, Alert, ActivityIndicator, Image } from 'react-native';
 import HelpSupportModal from './HelpSupportModal';
 import AppInfo from './AppInfo';
 import AboutModal from './AboutModal';
 import PrivacySecurityModal from './PrivacySecurityModal';
 import EditProfileModal from './EditProfileModal';
-import React, { useState, useEffect, useMemo, useContext } from 'react'
 import { CommonActions, useNavigation } from '@react-navigation/native';
 import { auth, firestore } from '../../services/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { deleteDoc, doc, getDoc } from 'firebase/firestore';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import LinearGradient from 'react-native-linear-gradient';
 import { AuthContext } from '../../context/AuthContext';
+import { deleteUser } from 'firebase/auth';
+import { exportTransactionsToCSV, importTransactionsFromCSV } from '../../utils/transactionExportImport';
 
 const MenuItem = ({ icon, title, subtitle, onPress }: { icon: string; title: string; subtitle: string; onPress: () => void }) => (
   <TouchableOpacity
@@ -86,6 +87,47 @@ export default function ProfileScreen() {
     }
   };
 
+  const handleDeleteAccount = async () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently delete your account and all your data. This action cannot be undone. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoggingOut(true);
+              const user = auth.currentUser;
+              if (user) {
+                // Delete user document from Firestore
+                await deleteDoc(doc(firestore, 'users', user.uid));
+                // Optionally: delete user's transactions, notifications, etc. here
+
+                // Delete user from Firebase Auth
+                await deleteUser(user);
+
+                // Log out and navigate to Welcome
+                await clearTokens();
+                navigation.dispatch(
+                  CommonActions.reset({
+                    index: 0,
+                    routes: [{ name: 'Welcome' }],
+                  })
+                );
+              }
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete account. Please re-login and try again.');
+            } finally {
+              setLoggingOut(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleLogout = async () => {
     Alert.alert(
       'Logout',
@@ -120,6 +162,28 @@ export default function ProfileScreen() {
     );
   };
 
+  // const handleExportTransactions = async () => {
+  //   try {
+  //     const userId = auth.currentUser?.uid;
+  //     if (!userId) throw new Error('User not found');
+  //     const path = await exportTransactionsToCSV(userId);
+  //     Alert.alert('Export Successful', `File saved to: ${path}`);
+  //   } catch (err: any) {
+  //     Alert.alert('Export Failed', err.message || 'Could not export transactions');
+  //   }
+  // };
+
+  // const handleImportTransactions = async () => {
+  //   try {
+  //     const userId = auth.currentUser?.uid;
+  //     if (!userId) throw new Error('User not found');
+  //     await importTransactionsFromCSV(userId);
+  //     Alert.alert('Import Successful', 'Transactions imported!');
+  //   } catch (err: any) {
+  //     Alert.alert('Import Failed', err.message || 'Could not import transactions');
+  //   }
+  // };
+
   const menuItems = useMemo(() => [
     {
       icon: 'person-outline',
@@ -133,6 +197,18 @@ export default function ProfileScreen() {
       subtitle: 'Manage your notification preferences',
       onPress: () => navigation.navigate('NotificationSettings' as never),
     },
+    // {
+    //   icon: 'file-download',
+    //   title: 'Export Transactions',
+    //   subtitle: 'Download your transaction history as CSV',
+    //   onPress: handleExportTransactions,
+    // },
+    // {
+    //   icon: 'file-upload',
+    //   title: 'Import Transactions',
+    //   subtitle: 'Import transactions from a CSV file',
+    //   onPress: handleImportTransactions,
+    // },
     {
       icon: 'security',
       title: 'Privacy & Security',
@@ -190,7 +266,16 @@ export default function ProfileScreen() {
               </LinearGradient>
             </View>
             <View style={styles.userInfo}>
-              <Text style={styles.userName}>{userInfo?.username}</Text>
+              <View style={styles.userInfoRow}>
+                <Text style={styles.userName}>{userInfo?.username}</Text>
+                <TouchableOpacity
+                  style={styles.userDeleteButton}
+                  onPress={handleDeleteAccount}
+                  disabled={loggingOut}
+                >
+                  <Icon name="delete-forever" size={28} color="#d32f2f" />
+                </TouchableOpacity>
+              </View>
               <Text style={styles.userEmail}>{userInfo?.email}</Text>
               <Text style={styles.joinDate}>Member since {userInfo?.joinDate}</Text>
             </View>
@@ -393,5 +478,14 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginLeft: 8,
     fontFamily: 'Poppins-SemiBold',
+  },
+  userInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  userDeleteButton: {
+    marginLeft: 8,
+    padding: 4,
   },
 });

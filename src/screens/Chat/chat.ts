@@ -48,6 +48,8 @@ export type ChatMessage = {
   createdAt: Date;
   userId: string;
   sender: 'user' | 'bot';
+  isTransaction?: boolean;        
+  transactionData?: any;          
 };
 
 export type ParsedTransactionData = {
@@ -326,24 +328,18 @@ export async function getSpendingAnalysis(userId: string, period: 'week' | 'mont
 }
 
 // Send a chat message (from user or bot)
-export async function sendMessage(userId: string, text: string, sender: 'user' | 'bot' = 'user') {
-  try {
-    if (!auth.currentUser) {
-      throw new Error('User not authenticated');
-    }
-    
-    const docRef = await addDoc(collection(firestore, 'chats'), {
-      text,
-      createdAt: Timestamp.now(),
-      userId,
-      sender,
-    });
-    
-    //
-  } catch (error) {
-    //
-    throw error;
+export async function sendMessage(userId: string, text: string, sender: 'user' | 'bot', transactionData?: any) {
+  const docData: any = {
+    userId,
+    text,
+    sender,
+    createdAt: new Date(),
+  };
+  if (transactionData) {
+    docData.isTransaction = true;
+    docData.transactionData = transactionData;
   }
+  await addDoc(collection(firestore, 'chats'), docData);
 }
 
 // Listen for chat messages (real-time updates)
@@ -374,6 +370,8 @@ export function listenForMessages(userId: string, onUpdate: (messages: ChatMessa
           createdAt: data.createdAt.toDate(),
           userId: data.userId,
           sender: data.sender || 'user',
+          isTransaction: (data as any).isTransaction,         
+          transactionData: (data as any).transactionData,     
         });
       });
       //
@@ -523,7 +521,7 @@ Respond with ONLY the JSON object:`;
             // Return transaction data for preview instead of saving directly
             const parsedTransactionData: ParsedTransactionData = {
               amount: parsedTransaction.amount,
-              category: parsedTransaction.category || (parsedTransaction.type === 'income' ? 'General Income' : 'General Expense'),
+              category: undefined,
               type: parsedTransaction.type,
               description: parsedTransaction.description || parsedTransaction.category,
               currency: transactionCurrency,

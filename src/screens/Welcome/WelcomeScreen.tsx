@@ -79,7 +79,7 @@ export default function Welcome({ navigation }: WelcomeScreenProps) {
               end={{ x: 0.8, y: 0.8 }}
             />
           </Animated.View>
-          <Image source={require('/Users/huybao/Desktop/FinWiseApp/src/assets/welcome.png')} style={styles.image} />
+          <Image source={require('../../assets/welcome.png')} style={styles.image} />
         </View>
         <Animated.View style={[styles.buttonContainer, { transform: [{ scale }] }]}> 
           <TouchableOpacity

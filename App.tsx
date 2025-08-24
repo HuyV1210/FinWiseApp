@@ -15,11 +15,13 @@ import NotificationScreen from './src/screens/Notification/NotificationScreen';
 import StatsChartScreen from './src/screens/Stats/StatsChartScreen';
 import BudgetScreen from './src/screens/Budget/BudgetScreen';
 import NotificationSettingsScreen from './src/screens/Settings/NotificationSettingsScreen';
-import EmailConfigScreen from './src/screens/EmailConfig/EmailConfigScreen';
 import { AuthProvider } from './src/context/AuthContext';
 import { fcmService } from './src/services/fcmService';
 import { auth } from './src/services/firebase';
 import React from 'react';
+
+// Import bank notification service to initialize it
+import './src/services/bankNotificationService';
 
 enableScreens();
 
@@ -68,11 +70,6 @@ export default function App() {
           <Stack.Screen 
             name="NotificationSettings" 
             component={NotificationSettingsScreen}
-            options={{ headerShown: false }}
-          />
-          <Stack.Screen 
-            name="EmailConfig" 
-            component={EmailConfigScreen}
             options={{ headerShown: false }}
           />
         </Stack.Navigator>

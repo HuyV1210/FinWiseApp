@@ -1,15 +1,14 @@
-import { KeyboardAvoidingView, Platform, StyleSheet, Text, View, TouchableOpacity, Alert, FlatList, ActivityIndicator, TextInput, NativeSyntheticEvent, NativeScrollEvent, DeviceEventEmitter } from 'react-native';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
+import { DeviceEventEmitter } from 'react-native';
+import CategoryPickerModal from '../../components/CategoryPickerModal';
+import { firestore, auth } from '../../services/firebase';
+import { doc, setDoc, serverTimestamp, collection, addDoc, updateDoc } from 'firebase/firestore';
+import { GEMINI_API_KEY } from '@env';
+import { listenForMessages, ChatMessage } from './chat';
 import LinearGradient from 'react-native-linear-gradient';
 import Ionicons from 'react-native-vector-icons/Ionicons';
-import { auth } from '../../services/firebase';
-import { getBotResponse, sendMessage, listenForMessages, ChatMessage, BotResponse } from './chat';
-import Icon from 'react-native-vector-icons/Ionicons';
-import TransactionPreviewModal from '../../components/TransactionPreviewModal';
-import CategoryPickerModal from '../../components/CategoryPickerModal';
-import { bankNotificationService } from '../../services/bankNotificationService';
-import { smsBankNotificationService } from '../../services/smsBankNotificationService';
-import { emailBankNotificationService } from '../../services/emailBankNotificationService';
+import { getBotResponse, sendMessage } from './chat';
 
 interface Message {
   id: string;
@@ -17,267 +16,286 @@ interface Message {
   sender: 'user' | 'bot';
   timestamp: Date;
   isTransaction?: boolean;
-  transactionData?: {
-    amount: number;
-    type: 'income' | 'expense';
-    description: string;
-    category: string;
-    currency: string;
-    bankName?: string;
-    source: string;
-  };
+  transactionData?: any;
 }
 
-export default function ChatScreen () {
+export default function ChatScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [enhancedTexts, setEnhancedTexts] = useState<{[key: string]: string}>({});
   const [inputText, setInputText] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(true);
-  const [expandedMessages, setExpandedMessages] = useState<{ [id: string]: boolean }>({});
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [showTransactionPreview, setShowTransactionPreview] = useState(false);
-  const [parsedTransactionData, setParsedTransactionData] = useState<any>(null);
-  const [pendingTransactions, setPendingTransactions] = useState<{ [messageId: string]: any }>({});
-  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
-  const [selectedTransactionId, setSelectedTransactionId] = useState<string | null>(null);
-  const flatListRef = useRef<FlatList>(null);
-  const unsubscribeRef = useRef<(() => void) | null>(null);
 
-  const categories = [
-    'Food & Dining', 'Transport', 'Shopping', 'Bills & Utilities',
-    'Entertainment', 'Health & Medical', 'ATM', 'Transfer', 
-    'Salary', 'Investment', 'Other'
-  ];
-  
-  // Get current date and time, formatted
-  const now = useMemo(() => {
-    const date = new Date();
-    const options: Intl.DateTimeFormatOptions = {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    };
-    return date.toLocaleString(undefined, options);
-  }, []);
-
-  // Always clear chat messages from Firebase and UI on mount
   useEffect(() => {
-    const clearChat = async (userId: string) => {
-      try {
-        const { collection, query, where, getDocs, deleteDoc } = await import('firebase/firestore');
-        const { firestore } = await import('../../services/firebase');
-        const q = query(collection(firestore, 'chats'), where('userId', '==', userId));
-        const snapshot = await getDocs(q);
-        const batchDeletes: Promise<void>[] = [];
-        snapshot.forEach(docSnap => {
-          batchDeletes.push(deleteDoc(docSnap.ref));
-        });
-        await Promise.all(batchDeletes);
-      } catch (err) {
-        // Optionally handle error
-      }
-      setMessages([]);
-      setExpandedMessages({});
-      setInputText('');
-    };
-
+    // Listen for chat messages (user/bot)
     const user = auth.currentUser;
-    if (!user) {
-      setInitialLoading(false);
-      return;
-    }
-    // Clear chat on mount
-    clearChat(user.uid).then(() => {
-      // Listen for real-time message updates (should be empty after clear)
+    if (user) {
       const unsubscribe = listenForMessages(user.uid, (chatMessages: ChatMessage[]) => {
-        const formattedMessages: Message[] = chatMessages.map(msg => ({
+        setMessages(chatMessages.map(msg => ({
           id: msg.id || '',
           text: msg.text,
           sender: msg.sender,
           timestamp: msg.createdAt,
-        }));
-        setMessages(formattedMessages);
-        setInitialLoading(false);
-        setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: true });
-        }, 100);
+          isTransaction: msg.isTransaction, 
+          transactionData: msg.transactionData, 
+        })));
       });
-      unsubscribeRef.current = unsubscribe;
-    });
+      return () => unsubscribe();
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleTransactionMessage = (transactionMessage: any) => {
+      // Remove auto category assignment if present
+      const cleanTransaction = {
+        ...transactionMessage,
+        transactionData: {
+          ...transactionMessage.transactionData,
+          category: undefined,
+        },
+      };
+      setMessages(prev => {
+        const newTransactions = [cleanTransaction, ...prev];
+        // Generate AI-enhanced text for the new transaction
+        generateEnhancedText(cleanTransaction);
+        return newTransactions;
+      });
+    };
+
+    // Listen for the TransactionChatMessage events from the bank notification service
+    const transactionSubscription = DeviceEventEmitter.addListener('TransactionChatMessage', handleTransactionMessage);
+
     return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-      }
+      transactionSubscription.remove();
     };
   }, []);
 
-  // Handle scroll events
-  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const isScrolledUp = contentOffset.y < contentSize.height - layoutMeasurement.height - 100;
-    setShowScrollToBottom(isScrolledUp);
-  };
+  async function generateEnhancedText(item: any) {
+    if (!GEMINI_API_KEY || !item.id) return;
+    
+    try {
+      const prompt = `Transform this bank transaction notification into a friendly, conversational message. Keep it concise but engaging.
 
-  // Handle refresh
-  const handleRefresh = () => {
-    setRefreshing(true);
-    // Simulate refresh delay
-    setTimeout(() => {
-      setRefreshing(false);
-    }, 1000);
-  };
+Original: "${item.text}"
+Transaction details: ${item.transactionData.type} of ${item.transactionData.amount} ${item.transactionData.currency}
+Description: ${item.transactionData.description}
 
-  // Scroll to bottom
-  const handleScrollToBottom = () => {
-    flatListRef.current?.scrollToEnd({ animated: true });
-    setShowScrollToBottom(false);
-  };
+Make it sound natural and add appropriate emojis. Focus on the key information but make it feel like a friendly notification.
+Response should be 1-2 sentences maximum.`;
 
-  // Toggle message expansion
-  const toggleMessageExpansion = (messageId: string) => {
-    setExpandedMessages(prev => ({
-      ...prev,
-      [messageId]: !prev[messageId]
-    }));
-  };
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { 
+              temperature: 0.7, 
+              maxOutputTokens: 100,
+              topK: 20,
+              topP: 0.9
+            }
+          })
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        const enhancedText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        
+        if (enhancedText) {
+          setEnhancedTexts(prev => ({
+            ...prev,
+            [item.id]: enhancedText
+          }));
+        }
+      }
+    } catch (error) {
+      console.error('Error generating enhanced text:', error);
+    }
+  }
 
   const handleSendMessage = async () => {
     if (!inputText.trim()) return;
-    
+
     const user = auth.currentUser;
     if (!user) {
       Alert.alert('Error', 'Please log in to send messages');
       return;
     }
-    
+
     const userMessage = inputText.trim();
-    const tempMessageId = Date.now().toString();
-    
-    // Add user message immediately to UI
-    const userMsg: Message = {
-      id: tempMessageId,
-      text: userMessage,
-      sender: 'user',
-      timestamp: new Date(),
-    };
-    
-    setMessages(prev => [...prev, userMsg]);
-    setInputText('');
-    setIsLoading(true);
-    
-    // Scroll to bottom
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
-    
-    try {
-      // Send user message to Firebase
-      await sendMessage(user.uid, userMessage, 'user');
-      
-      // Get bot response
-      const botResponse: BotResponse = await getBotResponse(userMessage);
-      
-      // Check if there's a parsed transaction
-      if (botResponse.parsedTransaction) {
-        // Convert the chat ParsedTransactionData to match TransactionPreviewModal interface
-        const modalData = {
-          amount: botResponse.parsedTransaction.amount,
-          type: botResponse.parsedTransaction.type,
-          description: botResponse.parsedTransaction.description || botResponse.parsedTransaction.category || '',
-          category: botResponse.parsedTransaction.category,
-          currency: botResponse.parsedTransaction.currency,
-        };
-        
-        setParsedTransactionData(modalData);
-        setShowTransactionPreview(true);
+
+    // Add user message to UI immediately
+    setMessages(prev => [
+      ...prev,
+      {
+        id: Date.now().toString(),
+        text: userMessage,
+        sender: 'user',
+        timestamp: new Date(),
       }
-      
-      // Send bot response to Firebase
-      await sendMessage(user.uid, botResponse.message, 'bot');
-      
+    ]);
+
+    setInputText('');
+
+    try {
+      // Send user message to Firestore
+      await sendMessage(user.uid, userMessage, 'user', undefined);
+
+      // Get bot response (call your bot API)
+      const botResponse = await getBotResponse(userMessage);
+
+      // If botResponse contains a parsedTransaction, add as a transaction message
+      if (botResponse.parsedTransaction) {
+        const cleanedTransactionData = { ...botResponse.parsedTransaction };
+        Object.keys(cleanedTransactionData).forEach(
+          key => cleanedTransactionData[key] === undefined && delete cleanedTransactionData[key]
+        );
+
+        setMessages(prev => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            text: botResponse.message,
+            sender: 'bot',
+            timestamp: new Date(),
+            isTransaction: true,
+            transactionData: cleanedTransactionData,
+          }
+        ]);
+        // Optionally: Send bot reply to Firestore as a transaction message
+        await sendMessage(user.uid, botResponse.message, 'bot', cleanedTransactionData);
+      } else {
+        // Add bot reply as a normal message
+        setMessages(prev => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            text: botResponse.message,
+            sender: 'bot',
+            timestamp: new Date(),
+          }
+        ]);
+        await sendMessage(user.uid, botResponse.message, 'bot');
+      }
     } catch (error) {
-      //
       Alert.alert('Error', 'Failed to send message');
-      
-      // Remove the temporary message on error
-      setMessages(prev => prev.filter(msg => msg.id !== tempMessageId));
-    } finally {
-      setIsLoading(false);
     }
   };
 
-  const renderMessage = ({ item } : {item: Message}) => {
-    const isUser = item.sender === 'user';
-    const lines = item.text.split(/\n+/);
-    const expanded = expandedMessages[item.id || ''] || false;
-    const linesToShow = expanded ? lines : lines.slice(0, 8);
-    const shouldShowExpand = lines.length > 8;
-    const isPendingTransaction = item.isTransaction && pendingTransactions[item.id];
-
-    return (
-      <View style={[
-        styles.messageBubbleContainer,
-        isUser ? styles.userMessageContainer : styles.botMessageContainer,
-      ]}>
-        <View style={[
-          styles.messageBubble,
-          isUser ? styles.userMessageBubble : styles.botMessageBubble,
-          item.isTransaction && styles.transactionBubble,
-        ]}>
-          {linesToShow.map((line, idx) => (
-            <Text
-              key={idx}
-              style={[styles.messageText, isUser ? styles.userMessageText : styles.botMessageText]}
-              numberOfLines={0}
-            >
-              {line}
-            </Text>
-          ))}
-          {shouldShowExpand && (
-            <TouchableOpacity 
-              onPress={() => toggleMessageExpansion(item.id)}
-              style={styles.expandButton}
-            >
-              <Text style={[styles.expandText, isUser ? styles.userExpandText : styles.botExpandText]}>
-                {expanded ? 'Show less' : 'Show more'}
-              </Text>
-            </TouchableOpacity>
-          )}
-          
-          {/* Transaction Action Buttons */}
-          {isPendingTransaction && (
-            <View style={styles.transactionActions}>
-              <TouchableOpacity 
-                style={[styles.actionButton, styles.saveButton]}
-                onPress={() => handleTransactionAction(item.id, 'save')}
-              >
-                <Text style={styles.actionButtonText}>💾 Save</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.actionButton, styles.categoryButton]}
-                onPress={() => handleTransactionAction(item.id, 'category')}
-              >
-                <Text style={styles.actionButtonText}>🏷️ Category</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.actionButton, styles.skipButton]}
-                onPress={() => handleTransactionAction(item.id, 'skip')}
-              >
-                <Text style={[styles.actionButtonText, { color: '#666' }]}>⏭️ Skip</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-        {isUser && (
-          <Text style={styles.timestamp}>
-            {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </Text>
-        )}
-      </View>
-    );
+  const handleCategoryPress = (index: number) => {
+    setSelectedIndex(index);
+    setPickerVisible(true);
   };
 
-  // Handler for new chat button
+  const handleCategorySelect = async (category: string) => {
+    if (selectedIndex === null) return;
+    
+    const selectedTransaction = messages[selectedIndex];
+    
+    try {
+      // Only try to update chat document if it's not a bank notification transaction
+      if (selectedTransaction?.id && !selectedTransaction.id.startsWith('tx_')) {
+        try {
+          const chatRef = doc(firestore, 'chats', selectedTransaction.id);
+          await updateDoc(chatRef, {
+            'transactionData.category': category,
+          });
+          console.log('✅ Updated category in chats collection');
+        } catch (chatError) {
+          console.log('ℹ️ Chat document not found (expected for bank notifications):', chatError);
+        }
+      }
+
+      // Update local state immediately for better UX
+      setMessages(prev =>
+        prev.map((item, i) =>
+          i === selectedIndex
+            ? {
+                ...item,
+                transactionData: {
+                  ...item.transactionData,
+                  category,
+                },
+              }
+            : item
+        )
+      );
+
+      // Save to Firestore database
+      const userId = auth.currentUser?.uid;
+      if (userId && selectedTransaction?.id) {
+        console.log('💾 Saving transaction to database:', {
+          userId,
+          transactionId: selectedTransaction.id,
+          category,
+          transactionData: selectedTransaction.transactionData
+        });
+        
+        // Save to the main transactions collection (same structure as AddScreen)
+        const transactionRef = doc(firestore, 'transactions', selectedTransaction.id);
+        await setDoc(transactionRef, {
+          type: selectedTransaction.transactionData.type === 'debit' ? 'expense' : 'income',
+          price: selectedTransaction.transactionData.amount,
+          category: category,
+          date: new Date(selectedTransaction.timestamp),
+          title: selectedTransaction.transactionData.description || 'Bank Transaction',
+          note: selectedTransaction.transactionData.description || '',
+          userId: userId,
+          createdAt: serverTimestamp(),
+          currency: selectedTransaction.transactionData.currency || 'VND',
+          source: 'Bank Notification',
+        }, { merge: true });
+        
+        console.log('✅ Transaction saved to main collection:', { 
+          transactionId: selectedTransaction.id, 
+          category,
+          collection: 'transactions'
+        });
+      } else {
+        console.warn('⚠️ Missing data for database save:', {
+          hasUser: !!userId,
+          hasTransactionId: !!selectedTransaction?.id,
+          authState: auth.currentUser ? 'authenticated' : 'not authenticated',
+          selectedTransaction
+        });
+        
+        // If user is not authenticated, still update UI but show warning
+        if (!userId) {
+          Alert.alert(
+            'Authentication Required', 
+            'Please sign in to save category changes to the database. The change will only be saved locally.'
+          );
+        }
+      }
+
+      setPickerVisible(false);
+      setSelectedIndex(null);
+    } catch (error) {
+      console.error('❌ Error updating category in database:', error);
+      
+      // Revert local state on error
+      setMessages(prev =>
+        prev.map((item, i) =>
+          i === selectedIndex
+            ? {
+                ...item,
+                transactionData: {
+                  ...item.transactionData,
+                  category: item.transactionData.category, // Keep original category
+                },
+              }
+            : item
+        )
+      );
+      
+      // Show error to user
+      Alert.alert('Error', 'Failed to save category. Please try again.');
+    }
+  };
+
   const handleNewChat = async () => {
     const user = auth.currentUser;
     if (!user) {
@@ -285,12 +303,12 @@ export default function ChatScreen () {
       return;
     }
     Alert.alert(
-      'New Chat',
-      'Are you sure you want to start a new chat? This will clear the current conversation.',
+      'Start New Chat',
+      'Are you sure you want to clear the chat history?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Start New Chat',
+          text: 'Clear',
           style: 'destructive',
           onPress: async () => {
             try {
@@ -309,204 +327,10 @@ export default function ChatScreen () {
               Alert.alert('Error', 'Failed to clear chat history.');
             }
             setMessages([]);
-            setExpandedMessages({});
-            setInputText('');
-          }
-        }
+          },
+        },
       ]
     );
-  };
-
-  // Initialize bank services on mount
-  useEffect(() => {
-    const initializeBankServices = async () => {
-      console.log('🚀 Initializing bank notification services...');
-      
-      // Initialize app notification service
-      const appNotificationResult = await bankNotificationService.initialize();
-      console.log('📱 App notifications:', appNotificationResult ? 'enabled' : 'disabled');
-      
-      // Initialize SMS service
-      const smsResult = await smsBankNotificationService.initialize();
-      
-      const emailConfigStatus = emailBankNotificationService.getEmailConfigStatus();
-      
-      if (emailConfigStatus.configured) {
-        await emailBankNotificationService.startEmailMonitoring();
-      } else {
-        console.log('📧 Email service: initialized (configuration needed for automatic detection)');
-      }
-    };
-    
-    initializeBankServices();
-    
-    // Cleanup function to stop email monitoring when component unmounts
-    return () => {
-      emailBankNotificationService.stopEmailMonitoring();
-    };
-  }, []);
-
-  // Listen for transaction chat messages
-  useEffect(() => {
-    console.log('📡 Setting up TransactionChatMessage listener in ChatScreen');
-    
-    const listener = DeviceEventEmitter.addListener('TransactionChatMessage', (transactionMessage) => {
-      console.log('🎯 ChatScreen received TransactionChatMessage event:', transactionMessage);
-      
-      // Add transaction message to chat
-      setMessages(prev => [...prev, transactionMessage]);
-      
-      // Store pending transaction data
-      setPendingTransactions(prev => ({
-        ...prev,
-        [transactionMessage.id]: transactionMessage.transactionData
-      }));
-      
-      // Scroll to bottom to show new message
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-      
-      console.log('✅ Transaction message added to chat');
-    });
-
-    return () => {
-      console.log('🔌 Removing TransactionChatMessage listener');
-      listener.remove();
-    };
-  }, []);
-
-  // Handle transaction actions
-  const handleTransactionAction = async (messageId: string, action: 'save' | 'category' | 'skip') => {
-    const transactionData = pendingTransactions[messageId];
-    if (!transactionData) return;
-
-    switch (action) {
-      case 'save':
-        try {
-          await saveTransaction(transactionData);
-          addBotResponse(`✅ Transaction saved successfully!\n\n💰 ${transactionData.amount.toLocaleString()} ${transactionData.currency} added to your ${transactionData.category} ${transactionData.type === 'income' ? 'income' : 'expenses'}.`);
-          // Remove from pending transactions after successful saving
-          setPendingTransactions(prev => {
-            const newPending = { ...prev };
-            delete newPending[messageId];
-            return newPending;
-          });
-        } catch (error) {
-          // Error message already handled in saveTransaction function
-          console.error('Failed to save transaction:', error);
-        }
-        break;
-      case 'category':
-        setSelectedTransactionId(messageId);
-        setShowCategoryPicker(true);
-        // Don't remove from pending transactions - keep buttons visible
-        break;
-      case 'skip':
-        addBotResponse(`⏭️ Transaction skipped. No worries, you can always add it manually later.`);
-        setPendingTransactions(prev => {
-          const newPending = { ...prev };
-          delete newPending[messageId];
-          return newPending;
-        });
-        break;
-    }
-  };
-
-  const handleCategoryChange = async (newCategory: string) => {
-    if (!selectedTransactionId) return;
-
-    const transactionData = pendingTransactions[selectedTransactionId];
-    if (transactionData) {
-      try {
-        transactionData.category = newCategory;
-        await saveTransaction(transactionData);
-        addBotResponse(`✅ Transaction saved with category "${newCategory}"!\n\n💰 ${transactionData.amount.toLocaleString()} ${transactionData.currency} added to your ${newCategory} ${transactionData.type === 'income' ? 'income' : 'expenses'}.`);
-        
-        // Remove from pending transactions after successful saving with new category
-        setPendingTransactions(prev => {
-          const newPending = { ...prev };
-          delete newPending[selectedTransactionId];
-          return newPending;
-        });
-      } catch (error) {
-        // Error message already handled in saveTransaction function
-        console.error('Failed to save transaction with category:', error);
-      }
-    }
-
-    setShowCategoryPicker(false);
-    setSelectedTransactionId(null);
-  };
-
-  const saveTransaction = async (transactionData: any) => {
-    try {
-      const user = auth.currentUser;
-      if (!user) {
-        throw new Error('User not authenticated');
-      }
-
-      // Import Firebase functions dynamically
-      const { collection, addDoc, Timestamp } = await import('firebase/firestore');
-      const { firestore } = await import('../../services/firebase');
-      const { sendTransactionAddedNotification } = await import('../../services/notificationService');
-
-      // Format transaction data for Firebase
-      const transactionToSave = {
-        id: `tx_${Date.now()}`, // Generate unique ID
-        type: transactionData.type,
-        title: transactionData.description || `${transactionData.bankName || 'Bank'} Transaction`,
-        category: transactionData.category,
-        date: Timestamp.now(),
-        price: transactionData.amount,
-        currency: transactionData.currency || 'VND',
-        userId: user.uid,
-        source: transactionData.source || 'SMS',
-        bankName: transactionData.bankName,
-        createdAt: Timestamp.now(),
-      };
-
-      console.log('💾 Saving transaction to Firestore:', transactionToSave);
-      
-      // Save to Firebase Firestore
-      const docRef = await addDoc(collection(firestore, 'transactions'), transactionToSave);
-      
-      console.log('✅ Transaction saved with ID:', docRef.id);
-
-      // Send transaction confirmation notification
-      try {
-        await sendTransactionAddedNotification(
-          user.uid,
-          transactionData.type,
-          transactionData.amount,
-          transactionData.category
-        );
-        console.log('📱 Transaction notification sent');
-      } catch (notificationError) {
-        console.error('Failed to send transaction notification:', notificationError);
-        // Don't fail the transaction save if notification fails
-      }
-      
-    } catch (error) {
-      console.error('❌ Error saving transaction:', error);
-      addBotResponse(`❌ Failed to save transaction: ${error.message || 'Unknown error'}. Please try again.`);
-      throw error; // Re-throw so caller knows it failed
-    }
-  };
-
-  const addBotResponse = (text: string) => {
-    const botMessage: Message = {
-      id: `bot_${Date.now()}`,
-      text,
-      sender: 'bot',
-      timestamp: new Date(),
-    };
-    
-    setMessages(prev => [...prev, botMessage]);
-    
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
   };
 
   return (
@@ -521,433 +345,213 @@ export default function ChatScreen () {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
       >
-        <View>
-          <View style={styles.header}>
+        <View style={styles.container}>
+          <View style={styles.headerContainer}>
             <View style={styles.headerContent}>
               {/* Bot Avatar */}
-              <View style={styles.avatarContainer}>
-                <View style={styles.avatarCircle}>
-                  <Text style={styles.avatarText}>🤖</Text>
-                </View>
+              <View style={styles.avatarCircle}>
+                <Text style={styles.avatarText}>🤖</Text>
               </View>
               {/* Name and Status */}
               <View style={styles.headerTextContainer}>
                 <Text style={styles.headerTitle}>FinWise Bot</Text>
                 <Text style={styles.headerStatus}>Active now</Text>
               </View>
-              {/* New Chat Icon */}
+              {/* (Optional) Add action buttons here */}
               <TouchableOpacity style={styles.newChatButton} onPress={handleNewChat}>
-                <Ionicons name="chatbubble-ellipses-outline" size={28} color="#fff" />
-              </TouchableOpacity>
-              {/* Debug Bank Notification Button */}
-              <TouchableOpacity 
-                style={styles.debugButton} 
-                onPress={() => {
-                  Alert.alert(
-                    '🧪 SMS & Debug Tools',
-                    'Choose a test option:',
-                    [
-                      {
-                        text: '🔍 Force Check Recent SMS',
-                        onPress: () => smsBankNotificationService.testForceCheckRecentSMS()
-                      },
-                      {
-                        text: '🧹 Clear Processed SMS',
-                        onPress: () => smsBankNotificationService.clearProcessedSMSIds()
-                      },
-                      {
-                        text: '📊 Show Processed SMS',
-                        onPress: () => smsBankNotificationService.showProcessedSMSIds()
-                      },
-                      {
-                        text: '🏦 Test ACB Format',
-                        onPress: () => smsBankNotificationService.testUserACBMessage()
-                      },
-                      {
-                        text: '� SMS Tests',
-                        onPress: () => {
-                          Alert.alert(
-                            '📱 SMS Tests',
-                            'Choose SMS test:',
-                            [
-                              {
-                                text: '🏦 ACB Transfer',
-                                onPress: () => smsBankNotificationService.testACBTransferSMS()
-                              },
-                              {
-                                text: '🇻🇳 Vietnamese Bank',
-                                onPress: () => smsBankNotificationService.testVietnameseSMS()
-                              },
-                              {
-                                text: '🌍 International Bank',
-                                onPress: () => smsBankNotificationService.testInternationalSMS()
-                              },
-                              {
-                                text: '� Salary SMS',
-                                onPress: () => smsBankNotificationService.testSalarySMS()
-                              },
-                              {
-                                text: 'Back',
-                                style: 'cancel'
-                              }
-                            ]
-                          );
-                        }
-                      },
-                      {
-                        text: '� Email Tests',
-                        onPress: () => {
-                          Alert.alert(
-                            '📧 Email Tests',
-                            'Choose email test:',
-                            [
-                              {
-                                text: '☕ Test Coffee QR Payment',
-                                onPress: () => {
-                                  // Trigger a test coffee shop QR payment
-                                  DeviceEventEmitter.emit('EmailNotification', {
-                                    subject: 'VCB - Thông báo giao dịch QR Code',
-                                    body: `
-                                      Tài khoản của bạn vừa có giao dịch:
-                                      Số tiền: -45,000 VND
-                                      Nội dung: QR Payment - Highlands Coffee
-                                      Loại GD: Thanh toán QR Code
-                                      Thời gian: ${new Date().toLocaleString()}
-                                      Số dư: 2,455,000 VND
-                                    `,
-                                    sender: 'noreply@vietcombank.com.vn',
-                                    timestamp: Date.now()
-                                  });
-                                }
-                              },
-                              {
-                                text: '🍜 Test MoMo Food Order',
-                                onPress: () => {
-                                  // Trigger a test MoMo food delivery payment
-                                  DeviceEventEmitter.emit('EmailNotification', {
-                                    subject: 'MoMo - Thanh toán QR thành công',
-                                    body: `
-                                      Bạn đã thanh toán QR thành công:
-                                      Số tiền: -85,000 VND
-                                      Merchant: GrabFood - Bun Bo Hue Ngon
-                                      Loại: QR Code Payment
-                                      Thời gian: ${new Date().toLocaleString()}
-                                      Số dư ví: 320,000 VND
-                                    `,
-                                    sender: 'noreply@momo.vn',
-                                    timestamp: Date.now()
-                                  });
-                                }
-                              },
-                              {
-                                text: '� Test ZaloPay Shopping',
-                                onPress: () => {
-                                  // Trigger a test ZaloPay convenience store payment
-                                  DeviceEventEmitter.emit('EmailNotification', {
-                                    subject: 'ZaloPay - Giao dịch thành công',
-                                    body: `
-                                      Giao dịch QR Code thành công:
-                                      Số tiền: -65,000 VND
-                                      Merchant: Circle K - Convenient Store
-                                      Nội dung: QR Payment for drinks and snacks
-                                      Thời gian: ${new Date().toLocaleString()}
-                                    `,
-                                    sender: 'noreply@zalopay.vn',
-                                    timestamp: Date.now()
-                                  });
-                                }
-                              },
-                              {
-                                text: '🔧 Check Service Status',
-                                onPress: () => {
-                                  console.log('📧 Email Transaction Service Status Check');
-                                  Alert.alert('Service Status', 'Email transaction service is running. Check console for detailed logs.');
-                                }
-                              },
-                              {
-                                text: 'Back',
-                                style: 'cancel'
-                              }
-                            ]
-                          );
-                        }
-                      },
-                      {
-                        text: '💳 App Notifications',
-                        onPress: () => {
-                          Alert.alert(
-                            '💳 App Notifications',
-                            'Choose notification test:',
-                            [
-                              {
-                                text: '� Grab Ride (-150k VND)',
-                                onPress: () => bankNotificationService.testVietcombankNotification()
-                              },
-                              {
-                                text: '☕ Coffee (-85k VND)',
-                                onPress: () => bankNotificationService.testTechcombankNotification()
-                              },
-                              {
-                                text: '� Salary (+5M VND)',
-                                onPress: () => bankNotificationService.testIncomeNotification()
-                              },
-                              {
-                                text: 'Back',
-                                style: 'cancel'
-                              }
-                            ]
-                          );
-                        }
-                      },
-                      {
-                        text: '🔧 Debug Tools',
-                        onPress: () => {
-                          Alert.alert(
-                            '🔧 Debug Tools',
-                            'Choose debug option:',
-                            [
-                              {
-                                text: '🔍 SMS Module Status',
-                                onPress: () => smsBankNotificationService.testSMSModuleStatus()
-                              },
-                              {
-                                text: '🔥 Manual Event Test',
-                                onPress: () => smsBankNotificationService.testManualTransactionEvent()
-                              },
-                              {
-                                text: 'Back',
-                                style: 'cancel'
-                              }
-                            ]
-                          );
-                        }
-                      },
-                      {
-                        text: 'Cancel',
-                        style: 'cancel'
-                      }
-                    ]
-                  );
-                }}
-              >
-                <Ionicons name="mail-outline" size={24} color="#fff" />
+                <Ionicons name="chatbubble-ellipses-outline" size={28} color="#00B88D" />
               </TouchableOpacity>
             </View>
           </View>
-        </View>
-        {/* Date/Time below header */}
-        <View style={styles.dateTimeContainer}>
-          <Text style={styles.dateTimeText}>{now}</Text>
-        </View>
-        {/* Message Container */}
-        <View style={styles.messagesContainer}>
-          {initialLoading ? (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-              <ActivityIndicator size="large" color="#00B88D" />
-              <Text style={{ color: '#00B88D', marginTop: 12 }}>Loading chat...</Text>
+          
+          {messages.length === 0 && (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>
+                👋 Hi! I'm FinWise Bot. Ask me anything about personal finance, budgeting, saving, or investing!
+              </Text>
             </View>
-          ) : (
-            <FlatList
-              ref={flatListRef}
-              data={messages}
-              renderItem={renderMessage}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.messagesList}
-              showsVerticalScrollIndicator={false}
-              onScroll={handleScroll}
-              scrollEventThrottle={16}
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              keyboardShouldPersistTaps="handled"
-              removeClippedSubviews={false}
-              ListEmptyComponent={() => (
-                <View style={styles.emptyContainer}>
-                  <Text style={styles.placeholderText}>
-                    👋 Hi! I'm FinWise Bot. Ask me anything about personal finance, budgeting, saving, or investing!
+          )}
+          
+          <FlatList
+            data={messages}
+            keyExtractor={(item, i) => item.id || i.toString()}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item, index }) => {
+              const isUser = item.sender === 'user';
+              const isTransaction = item.isTransaction && item.transactionData;
+              const enhancedText = isTransaction ? enhancedTexts[item.id] : undefined;
+              const displayText = isTransaction && enhancedText ? enhancedText : item.text;
+
+              return (
+                <View
+                  style={[
+                    styles.messageBubbleContainer,
+                    isUser ? styles.userMessageContainer : styles.botMessageContainer,
+                  ]}
+                >
+                  {/* Bot avatar on the left for bot messages */}
+                  {!isUser && (
+                    <View style={{ marginRight: 8, alignSelf: 'flex-end' }}>
+                      <View
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 18,
+                          backgroundColor: '#E6F0FF',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          marginBottom: 2,
+                        }}
+                      >
+                        <Text style={{ fontSize: 22 }}>🤖</Text>
+                      </View>
+                    </View>
+                  )}
+                  <View
+                    style={[
+                      styles.messageBubble,
+                      isUser ? styles.userMessageBubble : styles.botMessageBubble,
+                      isTransaction && styles.transactionBubble,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.messageText,
+                        isUser ? styles.userMessageText : styles.botMessageText,
+                      ]}
+                    >
+                      {displayText}
+                    </Text>
+                    {isTransaction && (
+                      <View style={styles.details}>
+                        <Text style={styles.amount}>
+                          {item.transactionData.type.toUpperCase()}: {item.transactionData.amount.toLocaleString()} {item.transactionData.currency}
+                        </Text>
+                        <TouchableOpacity
+                          onPress={() => handleCategoryPress(index)}
+                          disabled={!!item.transactionData.category}
+                          style={item.transactionData.category ? { opacity: 0.5 } : {}}
+                        >
+                          <Text style={styles.category}>
+                            Category:{' '}
+                            <Text
+                              style={{
+                                textDecorationLine: 'underline',
+                                color: '#1976d2',
+                              }}
+                            >
+                              {item.transactionData.category
+                                ? item.transactionData.category
+                                : 'Choose category'}
+                            </Text>
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.date}>
+                    {new Date(item.timestamp).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
                   </Text>
                 </View>
-              )}
-            />
-          )}
-          {showScrollToBottom && (
-            <TouchableOpacity
-              style={styles.scrollToBottomButton}
-              onPress={handleScrollToBottom}
-            >
-              <Icon name="arrow-downward" size={24} color="#fff" />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Input Container */}
-        <View style={styles.inputContainer}>
-          <View style={styles.inputWrapper}>
-            <TextInput
-              style={styles.textInput}
-              value={inputText}
-              onChangeText={setInputText}
-              placeholder="Ask me about finances..."
-              placeholderTextColor="#999"
-              multiline
-              maxLength={500}
-              editable={!isLoading}
-            />
-            <TouchableOpacity 
-              style={[styles.sendButton, (!inputText.trim() || isLoading) && styles.sendButtonDisabled]}
-              onPress={handleSendMessage}
-              disabled={!inputText.trim() || isLoading}
-            >
-              {isLoading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
+              );
+            }}
+          />
+          <CategoryPickerModal
+            visible={pickerVisible}
+            onClose={() => setPickerVisible(false)}
+            onSelect={handleCategorySelect}
+          />
+          <View style={styles.inputContainer}>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={styles.textInput}
+                value={inputText}
+                onChangeText={setInputText}
+                placeholder="Ask me about finances..."
+                placeholderTextColor="#999"
+                multiline
+                maxLength={500}
+              />
+              <TouchableOpacity
+                style={[
+                  styles.sendButton,
+                  !inputText.trim() && styles.sendButtonDisabled
+                ]}
+                onPress={handleSendMessage}
+                disabled={!inputText.trim()}
+              >
                 <Ionicons name="send" size={20} color="#fff" />
-              )}
-            </TouchableOpacity>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </KeyboardAvoidingView>
-      
-      <TransactionPreviewModal
-        visible={showTransactionPreview}
-        parsedData={parsedTransactionData}
-        onClose={() => {
-          setShowTransactionPreview(false);
-          setParsedTransactionData(null);
-        }}
-        onSaved={() => {
-          setShowTransactionPreview(false);
-          setParsedTransactionData(null);
-          // Show success message
-          Alert.alert('Success', 'Transaction has been saved successfully!');
-        }}
-      />
-      
-      <CategoryPickerModal
-        visible={showCategoryPicker}
-        onSelect={handleCategoryChange}
-        onClose={() => {
-          setShowCategoryPicker(false);
-          setSelectedTransactionId(null);
-        }}
-      />
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.06)',
-    backgroundColor: 'transparent',
-  },
-  messagesContainer: {
-    flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    marginHorizontal: 0,
-    marginTop: 0,
-    marginBottom: 0,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 1,
-  },
-  emptyContainer: {
+  container: { flex: 1, padding: 16 },
+  header: { fontSize: 20, fontWeight: 'bold', marginBottom: 10 },
+  emptyState: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 32,
     paddingTop: 60,
   },
-  placeholderText: {
+  emptyText: {
     color: '#888',
     fontSize: 16,
     textAlign: 'center',
     fontFamily: 'Poppins-Medium',
     lineHeight: 24,
   },
-  dateTimeContainer: {
-    alignItems: 'center',
-    marginTop: 4,
-    marginBottom: 8,
-  },
-  dateTimeText: {
-    fontSize: 13,
-    color: '#00B88D',
-    fontFamily: 'Poppins-Medium',
-    letterSpacing: 0.2,
-  },
-  headerContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-    justifyContent: 'flex-start',
-  },
-  avatarContainer: {
-    marginRight: 8,
-  },
-  avatarCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#E6F0FF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#00B88D',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  avatarText: {
-    fontSize: 28,
-  },
-  headerTextContainer: {
-    flex: 1,
-    flexDirection: 'column',
-    justifyContent: 'center',
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-    fontFamily: 'Poppins-Bold',
-  },
-  headerStatus: {
+  emptySubtext: {
     fontSize: 14,
-    color: '#00ff6aff',
-    fontFamily: 'Poppins-Medium',
-    marginTop: 2,
-    letterSpacing: 0.2,
+    color: '#999',
+    textAlign: 'center'
   },
-  newChatButton: {
-    marginLeft: 12,
-    padding: 6,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0,184,141,0.08)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  transaction: { 
+    padding: 15, 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#ddd',
+    backgroundColor: '#f9f9f9',
+    borderRadius: 8,
+    marginBottom: 8
   },
-  debugButton: {
-    marginLeft: 8,
-    padding: 6,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,165,0,0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  transactionText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2e7d32',
+    marginBottom: 8
   },
-  testButton: {
-    marginLeft: 8,
-    padding: 6,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,0,0,0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  details: {
+    marginLeft: 10,
+    marginBottom: 8
+  },
+  amount: {
+    fontSize: 14,
+    color: '#1976d2',
+    marginBottom: 4
+  },
+  category: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 4
+  },
+  source: {
+    fontSize: 12,
+    color: '#999',
+    fontStyle: 'italic'
+  },
+  date: { 
+    fontSize: 12, 
+    color: '#666',
+    textAlign: 'right'
   },
   messageBubbleContainer: {
     marginVertical: 4,
@@ -974,6 +578,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#F0F0F0',
     alignSelf: 'flex-start',
   },
+  transactionBubble: {
+    backgroundColor: '#F8F9FA',
+    borderWidth: 1,
+    borderColor: '#E0E4E7',
+    borderRadius: 12,
+    padding: 16,
+    margin: 8,
+  },
   messageText: {
     fontSize: 16,
     fontFamily: 'Poppins-Regular',
@@ -989,58 +601,69 @@ const styles = StyleSheet.create({
   botMessageText: {
     color: '#1A237E',
   },
-  expandButton: {
-    marginTop: 8,
-    paddingVertical: 4,
+  headerContainer: {
+    paddingHorizontal: 24,
+    paddingTop: 40,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0,0,0,0.06)',
+    backgroundColor: 'transparent',
   },
-  expandText: {
-    fontSize: 14,
-    fontFamily: 'Poppins-Medium',
+  headerContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    justifyContent: 'flex-start',
   },
-  userExpandText: {
-    color: 'rgba(255,255,255,0.8)',
-  },
-  botExpandText: {
-    color: '#00B88D',
-  },
-  timestamp: {
-    fontSize: 12,
-    color: '#999',
-    fontFamily: 'Poppins-Regular',
-    marginTop: 4,
-    textAlign: 'right',
-  },
-  scrollToBottomButton: {
-    position: 'absolute',
-    right: 24,
-    bottom: 32,
-    backgroundColor: '#00B88D',
-    borderRadius: 20,
-    width: 40,
-    height: 40,
+  avatarCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#E6F0FF',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#00B88D',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.08,
     shadowRadius: 4,
-    elevation: 4,
-    zIndex: 10,
+    elevation: 2,
   },
-  messagesList: {
-    paddingVertical: 16,
-    paddingBottom: 16,
+  avatarText: {
+    fontSize: 28,
+  },
+  headerTextContainer: {
+    flex: 1,
+    flexDirection: 'column',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#222',
+    fontFamily: 'Poppins-Bold',
+  },
+  headerStatus: {
+    fontSize: 14,
+    color: '#00B88D',
+    fontFamily: 'Poppins-Medium',
+    marginTop: 2,
+    letterSpacing: 0.2,
+  },
+  newChatButton: {
+    marginLeft: 12,
+    padding: 6,
+    borderRadius: 20,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   inputContainer: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    paddingBottom: 100, // Adjusted to ensure visibility without margin
+    paddingBottom: 90,
   },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    backgroundColor: '#fff',
     borderRadius: 24,
     paddingHorizontal: 16,
     paddingVertical: 8,
@@ -1049,6 +672,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 2,
+    backgroundColor: '#fff',
   },
   textInput: {
     flex: 1,
@@ -1071,45 +695,4 @@ const styles = StyleSheet.create({
   sendButtonDisabled: {
     backgroundColor: '#ccc',
   },
-  transactionBubble: {
-    backgroundColor: '#F8F9FA',
-    borderWidth: 1,
-    borderColor: '#E0E4E7',
-    borderRadius: 12,
-    padding: 16,
-    margin: 8,
-  },
-  transactionActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#E0E4E7',
-  },
-  actionButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    minWidth: 80,
-    alignItems: 'center',
-  },
-  saveButton: {
-    backgroundColor: '#00B88D',
-    borderColor: '#00B88D',
-  },
-  categoryButton: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
-  },
-  skipButton: {
-    backgroundColor: 'transparent',
-    borderColor: '#666',
-  },
-  actionButtonText: {
-    fontSize: 14,
-    fontFamily: 'Poppins-Medium',
-    color: '#FFF',
-  },
-})
+});

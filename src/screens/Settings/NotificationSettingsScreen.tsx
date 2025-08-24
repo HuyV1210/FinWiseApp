@@ -13,6 +13,7 @@ import { useNavigation } from '@react-navigation/native';
 import { auth, firestore } from '../../services/firebase';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { fcmService } from '../../services/fcmService';
+import LinearGradient from 'react-native-linear-gradient';
 
 interface NotificationSettings {
   budgetAlerts: boolean;
@@ -160,15 +161,25 @@ export default function NotificationSettingsScreen() {
   }
 
   return (
+    <LinearGradient
+      colors={['#00D09E', '#FFFFFF']}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={{ flex: 1 }}
+    >
     <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Icon name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Notification Settings</Text>
+        <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView style={styles.content}>
+      <ScrollView 
+        style={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <Text style={styles.sectionTitle}>Alert Types</Text>
         
         <SettingItem
@@ -228,105 +239,18 @@ export default function NotificationSettingsScreen() {
           onValueChange={(value) => updateSetting('inAppNotifications', value)}
           icon="notifications-none"
         />
-
-        {/* FCM Debug Section */}
-        <Text style={styles.sectionTitle}>Push Notification Debug</Text>
-        
-        <View style={styles.debugContainer}>
-          <Text style={styles.debugTitle}>FCM Service Status</Text>
-          <Text style={styles.debugText}>
-            Initialization: {fcmInitialized ? '✅ Initialized' : '❌ Not initialized'}
-          </Text>
-          <Text style={styles.debugText}>
-            Configuration: {fcmConfigured ? '✅ Valid' : '❌ Missing'}
-          </Text>
-          <Text style={styles.debugText}>
-            Token: {fcmToken ? '✅ Token received' : '❌ No token'}
-          </Text>
-          
-          {/* Status explanation */}
-          {!fcmConfigured && (
-            <Text style={styles.debugWarningText}>
-              ⚠️ FCM configuration missing. This is expected for development without google-services.json. In-app notifications will still work.
-            </Text>
-          )}
-          
-          {fcmConfigured && !fcmInitialized && (
-            <Text style={styles.debugWarningText}>
-              ⚠️ FCM not initialized. Try the "Reinitialize FCM" button below.
-            </Text>
-          )}
-          
-          {fcmConfigured && fcmInitialized && !fcmToken && (
-            <Text style={styles.debugWarningText}>
-              ⚠️ FCM initialized but no token received. Check network connection and Firebase configuration.
-            </Text>
-          )}
-          
-          {fcmToken && (
-            <>
-              <Text style={styles.debugText}>✅ Push notifications should work!</Text>
-              <Text style={styles.debugTokenText} numberOfLines={3}>
-                Token: {fcmToken.substring(0, 50)}...
-              </Text>
-            </>
-          )}
-          
-          <TouchableOpacity 
-            style={styles.debugButton}
-            onPress={async () => {
-              try {
-                console.log('🔄 Manual FCM reinitialization started...');
-                await fcmService.reinitialize();
-                await loadFCMToken();
-                checkFCMStatus();
-                Alert.alert('Success', 'FCM service reinitialized! Check status above.');
-              } catch (error) {
-                console.error('Reinitialize error:', error);
-                Alert.alert('Error', 'Failed to reinitialize FCM service: ' + error.message);
-              }
-            }}
-          >
-            <Text style={styles.debugButtonText}>Reinitialize FCM</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={[styles.debugButton, { marginTop: 8, backgroundColor: '#4CAF50' }]}
-            onPress={async () => {
-              try {
-                const user = auth.currentUser;
-                if (user) {
-                  // Test notification by adding directly to Firestore
-                  const { addDoc, collection } = await import('firebase/firestore');
-                  await addDoc(collection(firestore, 'notifications'), {
-                    userId: user.uid,
-                    type: 'test',
-                    title: 'Test Notification 🚀',
-                    message: 'This is a test push notification from FinWise!',
-                    data: { navigationTarget: 'Home' },
-                    read: false,
-                    createdAt: new Date(),
-                  });
-                  Alert.alert('Success', 'Test notification sent! Check your notifications.');
-                }
-              } catch (error) {
-                console.error('Test notification error:', error);
-                Alert.alert('Error', 'Failed to send test notification');
-              }
-            }}
-          >
-            <Text style={styles.debugButtonText}>Send Test Notification</Text>
-          </TouchableOpacity>
-        </View>
+        <View style={{ height: 80 }} />
       </ScrollView>
     </View>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8F9FA',
+    paddingTop: 50,
+    paddingHorizontal: 16,
   },
   loadingContainer: {
     flex: 1,
@@ -341,19 +265,20 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
+    marginBottom: 16,
+    paddingTop: 20, // Optional: for top spacing like NotificationScreen
+    paddingHorizontal: 16,
   },
   backButton: {
-    marginRight: 16,
+    marginRight: 8,
+    padding: 4,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#333',
+    flex: 1,
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#222',
+    textAlign: 'center',
   },
   content: {
     flex: 1,
@@ -403,49 +328,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     lineHeight: 20,
-  },
-  debugContainer: {
-    backgroundColor: '#F8F9FA',
-    marginBottom: 12,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  debugTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 8,
-  },
-  debugText: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
-  },
-  debugWarningText: {
-    fontSize: 14,
-    color: '#F57C00',
-    marginBottom: 12,
-    fontStyle: 'italic',
-    lineHeight: 20,
-  },
-  debugTokenText: {
-    fontSize: 12,
-    color: '#999',
-    fontFamily: 'monospace',
-    marginBottom: 12,
-  },
-  debugButton: {
-    backgroundColor: '#00B88D',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignSelf: 'flex-start',
-  },
-  debugButtonText: {
-    color: '#FFF',
-    fontSize: 14,
-    fontWeight: '600',
   },
 });

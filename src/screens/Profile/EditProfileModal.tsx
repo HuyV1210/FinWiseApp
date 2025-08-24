@@ -5,6 +5,8 @@ import { auth, firestore } from '../../services/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
 import { launchImageLibrary, ImageLibraryOptions } from 'react-native-image-picker';
 import { Platform, PermissionsAndroid } from 'react-native';
+import storage from '@react-native-firebase/storage';
+import RNFS from 'react-native-fs';
 
 export default function EditProfileModal({ visible, onClose, userInfo, onProfileUpdated }: {
   visible: boolean;
@@ -48,6 +50,22 @@ export default function EditProfileModal({ visible, onClose, userInfo, onProfile
   // Pick image from gallery (react-native-image-picker) with permissions
   const pickImage = async () => {
     openRealPicker();
+  };
+
+  const getFilePath = async (uri: string) => {
+    if (uri.startsWith('content://')) {
+      const destPath = `${RNFS.TemporaryDirectoryPath}/${Date.now()}.jpg`;
+      await RNFS.copyFile(uri, destPath);
+      return destPath;
+    }
+    return uri;
+  };
+
+  const uploadImageToFirebase = async (localUri: string, userId: string) => {
+    const filename = `avatars/${userId}_${Date.now()}.jpg`;
+    const reference = storage().ref(filename);
+    await reference.putFile(localUri);
+    return await reference.getDownloadURL();
   };
 
   const openRealPicker = async () => {
@@ -107,21 +125,28 @@ export default function EditProfileModal({ visible, onClose, userInfo, onProfile
       };
       
       launchImageLibrary(options, (response) => {
-        console.log('Image library response:', response);
-        if (response.didCancel) {
-          console.log('User cancelled image picker');
-          return;
-        }
-        if (response.errorCode) {
-          console.log('ImagePicker Error: ', response.errorMessage);
-          Alert.alert('Error', response.errorMessage || 'Failed to pick image');
-          return;
-        }
-        if (response.assets && response.assets.length > 0) {
-          const imageUri = response.assets[0].uri;
-          console.log('Selected image URI:', imageUri);
-          setAvatarUrl(imageUri || '');
-        }
+        (async () => {
+          if (response.didCancel) return;
+          if (response.errorCode) {
+            Alert.alert('Error', response.errorMessage || 'Failed to pick image');
+            return;
+          }
+          if (response.assets && response.assets.length > 0) {
+            const imageUri = response.assets[0].uri;
+            const user = auth.currentUser;
+            if (user) {
+              try {
+                // Convert content:// URI to file:// if needed
+                const filePath = await getFilePath(imageUri);
+                // Upload to Firebase Storage
+                const downloadUrl = await uploadImageToFirebase(filePath, user.uid);
+                setAvatarUrl(downloadUrl);
+              } catch (err) {
+                Alert.alert('Error', 'Failed to upload avatar');
+              }
+            }
+          }
+        })();
       });
     } catch (error) {
       console.log('Error in openRealPicker:', error);
